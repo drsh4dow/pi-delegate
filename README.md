@@ -25,6 +25,7 @@ The tool runs a fresh in-memory child Pi agent in the current project, waits for
 - model/effort metadata
 - duration
 - tool/error counts
+- output truncation metadata when the final report is large
 - structured timeout/failure state when needed
 
 The main agent never sees the child’s intermediate exploration.
@@ -52,13 +53,18 @@ If `openai-codex/gpt-5.5` is missing or unauthenticated, `delegate` falls back t
 
 - fresh in-memory child session
 - parent cwd
-- project context files loaded
-- available Pi extensions loaded, so tools like web search can work
+- project context files loaded through Pi's normal resource discovery
+- extensions and package resources discovered from the child session's cwd/agent directory are loaded; ad-hoc parent runtime state is not treated as an API guarantee
 - recursive delegation tools are disabled inside the child
 - sequential execution to avoid concurrent delegated writes
 - 15-minute internal timeout
-- structured failure results instead of thrown tool errors
-- normal Pi tools are available to the child, including write-capable tools; delegate edits only when edits are intended
+- structured failure results instead of thrown tool errors; failures return `details.success: false` instead of Pi's native tool `isError` path
+- final child output is truncated at Pi's standard 2000-line/50KB tool-output limits, with the full report saved to a temp file when truncation occurs
+- normal Pi tools are available to the child, including write-capable tools; this is intentional and enforced by prompt/user intent rather than by a read-only tool sandbox
+
+## Package shape
+
+The npm package is both a Pi package and a small TypeScript module. Pi loads `./extensions/delegate.ts` from the package manifest, while `./index.ts` re-exports the extension and helper types for tests or advanced consumers.
 
 ## When to use it
 
