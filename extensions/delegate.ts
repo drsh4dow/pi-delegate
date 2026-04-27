@@ -218,20 +218,28 @@ export function resolveDelegateModel(ctx: ExtensionContext): {
 	};
 }
 
-export function buildFailureResult(
-	reason: string,
-	details: DelegateDetails,
-): { content: [{ type: "text"; text: string }]; details: DelegateDetails } {
-	return {
-		content: [{ type: "text", text: `Delegated task failed: ${reason}` }],
-		details,
-	};
-}
-
 function formatDuration(ms: number): string {
 	if (ms < 1000) return `${ms}ms`;
 	if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
 	return `${Math.floor(ms / 60000)}m${Math.floor((ms % 60000) / 1000)}s`;
+}
+
+function shortModelName(name: string | undefined): string {
+	if (!name) return "unknown model";
+	const slash = name.lastIndexOf("/");
+	return slash === -1 ? name : name.slice(slash + 1);
+}
+
+function toolCountText(count: number): string {
+	return `${count} ${count === 1 ? "tool" : "tools"}`;
+}
+
+function formatStatusParts(details: DelegateDetails): string {
+	let text = `${shortModelName(details.model)}${details.fallbackReason ? " (fallback)" : ""} • ${formatDuration(details.durationMs)} • ${toolCountText(details.toolCalls)}`;
+	if (details.failedToolCalls > 0) {
+		text += ` • ${details.failedToolCalls} failed`;
+	}
+	return text;
 }
 
 export default function delegateExtension(pi: ExtensionAPI) {
@@ -269,22 +277,28 @@ export default function delegateExtension(pi: ExtensionAPI) {
 			let unsubscribe: (() => void) | undefined;
 			let removeAbortListener: (() => void) | undefined;
 
-			onUpdate?.({
-				content: [{ type: "text", text: `Delegating (${effort})...` }],
-				details: {
-					success: false,
-					effort,
-					requestedModel: REQUESTED_MODEL,
-					model: modelName(modelChoice.model),
-					thinking,
-					fallbackReason: modelChoice.fallbackReason,
-					durationMs: 0,
-					toolCalls: 0,
-					failedToolCalls: 0,
-					timedOut: false,
-					aborted: false,
-				},
+			const currentDetails = (): DelegateDetails => ({
+				success: false,
+				effort,
+				requestedModel: REQUESTED_MODEL,
+				model: modelName(child?.model ?? modelChoice.model),
+				thinking,
+				fallbackReason: modelChoice.fallbackReason,
+				durationMs: Date.now() - startedAt,
+				toolCalls,
+				failedToolCalls,
+				timedOut,
+				aborted,
 			});
+
+			const updateProgress = () => {
+				onUpdate?.({
+					content: [{ type: "text", text: `Delegating (${effort})...` }],
+					details: currentDetails(),
+				});
+			};
+
+			updateProgress();
 
 			const abortChild = async () => {
 				if (!child?.isStreaming) return;
@@ -315,9 +329,13 @@ export default function delegateExtension(pi: ExtensionAPI) {
 				child.setActiveToolsByName(selectChildToolNames(child.getAllTools()));
 
 				unsubscribe = child.subscribe((event: AgentSessionEvent) => {
-					if (event.type === "tool_execution_start") toolCalls++;
-					if (event.type === "tool_execution_end" && event.isError) {
-						failedToolCalls++;
+					if (event.type === "tool_execution_start") {
+						toolCalls++;
+						updateProgress();
+					}
+					if (event.type === "tool_execution_end") {
+						if (event.isError) failedToolCalls++;
+						updateProgress();
 					}
 					if (event.type !== "message_end") return;
 					const text = extractAssistantText(event.message);
@@ -359,20 +377,12 @@ export default function delegateExtension(pi: ExtensionAPI) {
 				]);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
-				return buildFailureResult(message, {
-					success: false,
-					effort,
-					requestedModel: REQUESTED_MODEL,
-					model: modelName(child?.model ?? modelChoice.model),
-					thinking,
-					fallbackReason: modelChoice.fallbackReason,
-					durationMs: Date.now() - startedAt,
-					toolCalls,
-					failedToolCalls,
-					timedOut,
-					aborted,
-					error: message,
-				});
+				const details = { ...currentDetails(), error: message };
+				let failure = `Delegated task failed: ${message} (${formatStatusParts(details)}`;
+				if (timedOut) failure += " • timed out";
+				if (aborted) failure += " • aborted";
+				failure += ")";
+				throw new Error(failure);
 			} finally {
 				removeAbortListener?.();
 				unsubscribe?.();
@@ -412,7 +422,13 @@ export default function delegateExtension(pi: ExtensionAPI) {
 		},
 		renderCall(args, theme) {
 			const effort = args.effort ?? "balanced";
-			const preview = args.task?.trim();
+			const firstLine = args.task?.trim().split(/\r?\n/, 1)[0]?.trim();
+			const normalized = firstLine?.replace(/\s+/g, " ");
+			const preview = normalized
+				? normalized.length > 96
+					? `${normalized.slice(0, 95).trimEnd()}…`
+					: normalized
+				: "";
 			return new Text(
 				theme.fg("toolTitle", theme.bold(`${TOOL_NAME} `)) +
 					theme.fg("muted", `${effort}${preview ? ` • ${preview}` : ""}`),
@@ -420,30 +436,29 @@ export default function delegateExtension(pi: ExtensionAPI) {
 				0,
 			);
 		},
-		renderResult(result, _options, theme) {
+		renderResult(result, options, theme, context) {
 			const details = result.details;
-			if (!details) {
-				const content = result.content[0];
-				return new Text(content?.type === "text" ? content.text : "", 0, 0);
-			}
-			if (!details.success) {
+			if (details?.success === false && options.isPartial) {
 				return new Text(
-					theme.fg(
-						"warning",
-						`failed • ${details.model ?? "unknown model"} • ${formatDuration(details.durationMs)}`,
-					),
+					theme.fg("muted", `running • ${formatStatusParts(details)}`),
 					0,
 					0,
 				);
 			}
-			return new Text(
-				theme.fg(
-					"success",
-					`done • ${details.model ?? "unknown model"} • ${formatDuration(details.durationMs)} • ${details.toolCalls} tools`,
-				),
-				0,
-				0,
-			);
+			if (details?.success === true) {
+				return new Text(
+					theme.fg("success", `done • ${formatStatusParts(details)}`),
+					0,
+					0,
+				);
+			}
+
+			const content = result.content[0];
+			const text = content?.type === "text" ? content.text : "";
+			if (context.isError) {
+				return new Text(theme.fg("warning", `failed • ${text}`), 0, 0);
+			}
+			return new Text(text, 0, 0);
 		},
 	});
 }

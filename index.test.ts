@@ -5,7 +5,6 @@ import type {
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 import delegateExtension, {
-	buildFailureResult,
 	DEFAULT_DELEGATE_MODEL,
 	DELEGATION_TOOL_DENYLIST,
 	type DelegateDetails,
@@ -46,6 +45,17 @@ function fakeContext(input: {
 			hasConfiguredAuth: () => input.preferredHasAuth === true,
 		},
 	} as unknown as ExtensionContext;
+}
+
+function fakeTheme(): Parameters<NonNullable<DelegateTool["renderCall"]>>[1] {
+	return {
+		fg: (_name: string, text: string) => text,
+		bold: (text: string) => text,
+	} as Parameters<NonNullable<DelegateTool["renderCall"]>>[1];
+}
+
+function renderText(component: { render(width: number): string[] }): string {
+	return component.render(120).join("\n");
 }
 
 describe("delegate extension", () => {
@@ -203,7 +213,8 @@ describe("delegate extension", () => {
 		).toBe("");
 	});
 
-	test("returns structured failure results without throwing", () => {
+	test("renders running delegate calls without a false failed state", () => {
+		const tool = getTool();
 		const details: DelegateDetails = {
 			success: false,
 			effort: "balanced",
@@ -213,20 +224,43 @@ describe("delegate extension", () => {
 			durationMs: 123,
 			toolCalls: 2,
 			failedToolCalls: 1,
-			timedOut: true,
+			timedOut: false,
 			aborted: false,
-			error: "Timed out after 15 minutes",
 		};
 
-		expect(buildFailureResult("Timed out after 15 minutes", details)).toEqual({
-			content: [
+		const text = renderText(
+			tool.renderResult?.(
+				{ content: [], details },
+				{ expanded: false, isPartial: true },
+				fakeTheme(),
+				{ isError: false } as Parameters<
+					NonNullable<DelegateTool["renderResult"]>
+				>[3],
+			) ?? { render: () => [] },
+		);
+
+		expect(text).toContain("running • gpt-5.5 • 123ms • 2 tools");
+		expect(text).toContain("1 failed");
+		expect(text).not.toContain("failed •");
+	});
+
+	test("renders concise delegate call previews", () => {
+		const tool = getTool();
+		const text = renderText(
+			tool.renderCall?.(
 				{
-					type: "text",
-					text: "Delegated task failed: Timed out after 15 minutes",
+					effort: "smart",
+					task: `${"Inspect this very noisy delegated task ".repeat(6)}\nDo not show this second line`,
 				},
-			],
-			details,
-		});
+				fakeTheme(),
+				{} as Parameters<NonNullable<DelegateTool["renderCall"]>>[2],
+			) ?? { render: () => [] },
+		);
+
+		expect(text).toStartWith("delegate smart • Inspect this very noisy");
+		expect(text).toContain("…");
+		expect(text).not.toContain("Do not show this second line");
+		expect(text.length).toBeLessThan(130);
 	});
 
 	test("truncates delegated final output and stores the full text", async () => {
@@ -242,11 +276,12 @@ describe("delegate extension", () => {
 		await unlink(fullOutputFile);
 	});
 
-	test("executes a child session, filters recursive tools, and returns final text", async () => {
+	test("executes a child session, filters recursive tools, returns final text, and throws native failures", async () => {
 		let activeTools: string[] = [];
-		let disposed = false;
+		let disposeCount = 0;
 		let reloaded = false;
 		let promptText = "";
+		const updates: DelegateDetails[] = [];
 		type FakeAgentEvent = {
 			type: string;
 			toolName?: string;
@@ -273,7 +308,7 @@ describe("delegate extension", () => {
 					isStreaming: false,
 					abort: async () => {},
 					dispose: () => {
-						disposed = true;
+						disposeCount++;
 					},
 					getAllTools: () => [
 						{ name: "read" },
@@ -284,6 +319,14 @@ describe("delegate extension", () => {
 					prompt: async (text: string) => {
 						promptText = text;
 						listener?.({ type: "tool_execution_start", toolName: "read" });
+						if (text === "fail task") {
+							listener?.({
+								type: "tool_execution_end",
+								toolName: "read",
+								isError: true,
+							});
+							throw new Error("child exploded");
+						}
 						listener?.({
 							type: "tool_execution_end",
 							toolName: "read",
@@ -311,25 +354,39 @@ describe("delegate extension", () => {
 			getAgentDir: () => "/tmp/pi-agent",
 		}));
 
-		const result = await getTool().execute(
+		const tool = getTool();
+		const context = {
+			cwd: "/workspace",
+			model: { provider: "openai-codex", id: "gpt-5.5" },
+			modelRegistry: {
+				find: () => ({ provider: "openai-codex", id: "gpt-5.5" }),
+				hasConfiguredAuth: () => true,
+			},
+		} as unknown as ExtensionContext;
+
+		const result = await tool.execute(
 			"tool-call",
 			{ task: "inspect package", effort: "fast" },
 			undefined,
-			undefined,
-			{
-				cwd: "/workspace",
-				model: { provider: "openai-codex", id: "gpt-5.5" },
-				modelRegistry: {
-					find: () => ({ provider: "openai-codex", id: "gpt-5.5" }),
-					hasConfiguredAuth: () => true,
-				},
-			} as unknown as ExtensionContext,
+			(update) => updates.push(update.details as DelegateDetails),
+			context,
 		);
 
 		expect(reloaded).toBe(true);
-		expect(disposed).toBe(true);
+		expect(disposeCount).toBe(1);
 		expect(promptText).toBe("inspect package");
 		expect(activeTools).toEqual(["read", "write"]);
+		expect(updates.at(0)).toMatchObject({
+			success: false,
+			effort: "fast",
+			toolCalls: 0,
+		});
+		expect(updates.at(-1)).toMatchObject({
+			success: false,
+			effort: "fast",
+			toolCalls: 1,
+			failedToolCalls: 0,
+		});
 		expect(result.content).toEqual([
 			{ type: "text", text: "child final report" },
 		]);
@@ -341,5 +398,16 @@ describe("delegate extension", () => {
 			timedOut: false,
 			aborted: false,
 		});
+
+		await expect(
+			tool.execute(
+				"tool-call",
+				{ task: "fail task", effort: "balanced" },
+				undefined,
+				undefined,
+				context,
+			),
+		).rejects.toThrow("Delegated task failed: child exploded (gpt-5.5 •");
+		expect(disposeCount).toBe(2);
 	});
 });

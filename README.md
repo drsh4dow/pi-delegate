@@ -26,7 +26,7 @@ The tool runs a fresh in-memory child Pi agent in the current project, waits for
 - duration
 - tool/error counts
 - output truncation metadata when the final report is large
-- structured timeout/failure state when needed
+- native tool errors with concise failure metadata when delegation fails
 
 The main agent never sees the child’s intermediate exploration.
 
@@ -58,7 +58,8 @@ If `openai-codex/gpt-5.5` is missing or unauthenticated, `delegate` falls back t
 - recursive delegation tools are disabled inside the child
 - sequential execution to avoid concurrent delegated writes
 - 15-minute internal timeout
-- structured failure results instead of thrown tool errors; failures return `details.success: false` instead of Pi's native tool `isError` path
+- running calls render as neutral progress, not failure; the collapsed row shows short model id, elapsed time, and child tool count
+- failures throw native Pi tool errors with a concise reason plus model/duration/tool-count metadata
 - final child output is truncated at Pi's standard 2000-line/50KB tool-output limits, with the full report saved to a temp file when truncation occurs
 - normal Pi tools are available to the child, including write-capable tools; this is intentional and enforced by prompt/user intent rather than by a read-only tool sandbox
 
