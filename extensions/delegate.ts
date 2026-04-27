@@ -14,9 +14,23 @@ import { Text } from "@mariozechner/pi-tui";
 const TOOL_NAME = "delegate";
 const TIMEOUT_MS = 15 * 60 * 1000;
 const REQUESTED_MODEL = "openai-codex/gpt-5.5";
-const DELEGATE_PROMPT = `You are a delegated worker running in a fresh context.
+const DELEGATE_PROMPT = `You are a delegated child Pi agent running in a fresh context for a parent agent.
 
-Complete only the assigned task. Use tools as needed. Return a concise final report with the useful result, relevant files changed or inspected, and any caveats. Do not continue the parent conversation.`;
+Your contract:
+- Complete only the assigned task. Do not continue the parent conversation.
+- Treat the task as self-contained. Use repository/project instructions and tools as needed.
+- Respect scope exactly. If the task says read-only, do not modify files. If edits are allowed, make focused changes only; do not commit, revert unrelated work, or touch unrelated files.
+- Prefer evidence over assertion. Inspect before changing. Verify important claims with tests, typechecks, commands, or source references when practical.
+- If blocked or uncertain, make the smallest reasonable investigation, then report the blocker clearly instead of guessing.
+- Keep intermediate exploration out of the final answer.
+
+Final response format:
+- Result: concise answer or summary of completed work.
+- Files inspected/changed: relevant paths only.
+- Verification: commands run and outcomes, or "not run" with reason.
+- Caveats/next steps: only if important.
+
+Return only the final report.`;
 
 export const DEFAULT_DELEGATE_MODEL = {
 	provider: "openai-codex",
@@ -30,12 +44,13 @@ export const DELEGATION_TOOL_DENYLIST = [
 
 const DelegateParams = Type.Object({
 	task: Type.String({
-		description: "The task for the delegated child agent to perform.",
+		description:
+			"Self-contained task for the delegated child agent. Include objective, relevant context/files, constraints, whether edits are allowed or read-only, expected output, and verification requirements.",
 	}),
 	effort: Type.Optional(
 		StringEnum(["fast", "balanced", "smart"], {
 			description:
-				"Speed vs smartness tradeoff. fast=minimal thinking, balanced=medium, smart=high.",
+				"Speed vs depth for the child agent. fast=quick reconnaissance/simple tasks, balanced=normal investigation or edits, smart=ambiguous/high-risk design, debugging, or review.",
 			default: "balanced",
 		}),
 	),
@@ -175,12 +190,16 @@ export default function delegateExtension(pi: ExtensionAPI) {
 		name: TOOL_NAME,
 		label: "Delegate",
 		description:
-			"Delegate a task to a fresh child Pi agent so the main context receives only the final result. The child has normal Pi tools and can modify files; delegate write-capable tasks only when edits are intended.",
+			"Run a fresh child Pi agent for subagent/delegated work. Use when you want an isolated worker for investigation, research, review, broad repo scanning, or a narrow implementation while keeping the parent context clean. The parent receives only the child’s final report. The child has normal Pi tools and may modify files; delegate write-capable tasks only when user intent permits edits.",
 		promptSnippet:
-			"Delegate isolated work to a fresh child agent and return only its concise result.",
+			"Run an isolated child Pi agent for subagent/delegation work; returns only the child’s concise final result.",
 		promptGuidelines: [
-			"Use delegate for isolated investigation or implementation tasks whose intermediate context should not pollute the main conversation.",
-			"Use delegate for write-capable tasks only when the user intent allows edits, because delegate child agents have normal Pi tools and may modify files.",
+			"Use delegate whenever you want to invoke a subagent, spin off a delegated worker, or isolate exploration from the main conversation.",
+			"Use delegate for broad repo scans, noisy investigation, library/API research, independent code review, plan critique, or narrow implementation tasks whose intermediate context should not pollute the parent context.",
+			"Do not manually simulate a subagent in chat; if a separate worker would help, call delegate with a self-contained task.",
+			"When calling delegate, include the objective, relevant context/files, constraints, whether edits are allowed, expected output, and verification requirements.",
+			"Use delegate for write-capable tasks only when user intent allows edits; mark the task read-only for investigation, research, or review.",
+			"Do not use delegate for trivial local edits or questions the parent can answer cheaply; delegation should buy isolation, parallel reasoning, or reduced context noise.",
 		],
 		parameters: DelegateParams,
 		executionMode: "sequential",

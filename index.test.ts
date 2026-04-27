@@ -61,20 +61,43 @@ describe("delegate extension", () => {
 		expect(tool.name).toBe("delegate");
 		expect(tool.label).toBe("Delegate");
 		expect(tool.executionMode).toBe("sequential");
-		expect(tool.description).toContain("fresh child Pi agent");
-		expect(tool.description).toContain("can modify files");
-		expect(tool.promptSnippet).toContain("fresh child agent");
-		expect(promptGuidelines).toHaveLength(2);
-		expect(
-			promptGuidelines.every((guideline) => guideline.includes("delegate")),
-		).toBe(true);
-		expect(parameters.properties.task?.description).toContain("task");
+		expect(tool.description).toContain("subagent/delegated work");
+		expect(tool.description).toContain("final report");
+		expect(tool.description).toContain("may modify files");
+		expect(tool.promptSnippet).toContain("subagent/delegation");
+		expect(promptGuidelines).toHaveLength(6);
+		const joinedGuidelines = promptGuidelines.join("\n");
+		expect(joinedGuidelines).toContain("invoke a subagent");
+		expect(joinedGuidelines).toContain("broad repo scans");
+		expect(joinedGuidelines).toContain("Do not manually simulate a subagent");
+		expect(joinedGuidelines).toContain("self-contained task");
+		expect(joinedGuidelines).toContain("read-only");
+		expect(joinedGuidelines).toContain("trivial local edits");
+		expect(parameters.properties.task?.description).toContain(
+			"Self-contained task",
+		);
+		expect(parameters.properties.task?.description).toContain("read-only");
+		expect(parameters.properties.task?.description).toContain("verification");
+		expect(parameters.properties.effort?.description).toContain(
+			"quick reconnaissance",
+		);
+		expect(parameters.properties.effort?.description).toContain("high-risk");
 		expect(parameters.properties.effort?.default).toBe("balanced");
 		expect(parameters.required).toEqual(["task"]);
 		expect(Object.keys(parameters.properties).sort()).toEqual([
 			"effort",
 			"task",
 		]);
+	});
+
+	test("child prompt defines the delegated worker contract", async () => {
+		const source = await Bun.file("extensions/delegate.ts").text();
+
+		expect(source).toContain("Your contract:");
+		expect(source).toContain("If the task says read-only, do not modify files");
+		expect(source).toContain("Prefer evidence over assertion");
+		expect(source).toContain("Final response format:");
+		expect(source).toContain("Verification: commands run and outcomes");
 	});
 
 	test("package metadata follows Pi package distribution conventions", async () => {
