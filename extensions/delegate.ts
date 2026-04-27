@@ -1,13 +1,22 @@
+import { randomUUID } from "node:crypto";
+import { writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { type Static, StringEnum, Type } from "@mariozechner/pi-ai";
 import {
 	type AgentSessionEvent,
 	createAgentSession,
+	DEFAULT_MAX_BYTES,
+	DEFAULT_MAX_LINES,
 	DefaultResourceLoader,
 	type ExtensionAPI,
 	type ExtensionContext,
+	formatSize,
 	getAgentDir,
 	SessionManager,
 	type ToolInfo,
+	type TruncationResult,
+	truncateHead,
 } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 
@@ -73,6 +82,46 @@ export interface DelegateDetails {
 	timedOut: boolean;
 	aborted: boolean;
 	error?: string;
+	outputTruncated?: boolean;
+	fullOutputFile?: string;
+}
+
+export interface DelegateOutput {
+	text: string;
+	truncation?: TruncationResult;
+	fullOutputFile?: string;
+}
+
+export async function formatDelegateOutput(
+	text: string,
+): Promise<DelegateOutput> {
+	const truncation = truncateHead(text, {
+		maxLines: DEFAULT_MAX_LINES,
+		maxBytes: DEFAULT_MAX_BYTES,
+	});
+	if (!truncation.truncated) return { text };
+
+	let fullOutputFile: string | undefined;
+	let fullOutputNotice = "Full output could not be saved.";
+	try {
+		fullOutputFile = join(
+			tmpdir(),
+			`pi-delegate-${process.pid}-${Date.now()}-${randomUUID()}.txt`,
+		);
+		await writeFile(fullOutputFile, text, "utf8");
+		fullOutputNotice = `Full output saved to: ${fullOutputFile}`;
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		fullOutputFile = undefined;
+		fullOutputNotice = `Full output could not be saved: ${message}`;
+	}
+
+	const notice = `[Delegated output truncated: ${truncation.outputLines} of ${truncation.totalLines} lines (${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)}). ${fullOutputNotice}]`;
+	return {
+		text: truncation.content ? `${truncation.content}\n\n${notice}` : notice,
+		truncation,
+		fullOutputFile,
+	};
 }
 
 export function thinkingForEffort(effort: DelegateEffort): DelegateThinking {
@@ -331,6 +380,10 @@ export default function delegateExtension(pi: ExtensionAPI) {
 				child?.dispose();
 			}
 
+			const output = await formatDelegateOutput(
+				lastAssistantText ||
+					"Delegated task completed without a final text response.",
+			);
 			const details: DelegateDetails = {
 				success: true,
 				effort,
@@ -343,15 +396,15 @@ export default function delegateExtension(pi: ExtensionAPI) {
 				failedToolCalls,
 				timedOut,
 				aborted,
+				outputTruncated: output.truncation?.truncated,
+				fullOutputFile: output.fullOutputFile,
 			};
 
 			return {
 				content: [
 					{
 						type: "text",
-						text:
-							lastAssistantText ||
-							"Delegated task completed without a final text response.",
+						text: output.text,
 					},
 				],
 				details,

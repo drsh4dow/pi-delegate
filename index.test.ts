@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
+import { unlink } from "node:fs/promises";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
@@ -9,6 +10,7 @@ import delegateExtension, {
 	DELEGATION_TOOL_DENYLIST,
 	type DelegateDetails,
 	extractAssistantText,
+	formatDelegateOutput,
 	resolveDelegateModel,
 	selectChildToolNames,
 	thinkingForEffort,
@@ -103,14 +105,16 @@ describe("delegate extension", () => {
 	test("package metadata follows Pi package distribution conventions", async () => {
 		const pkg = (await Bun.file("package.json").json()) as {
 			private?: boolean;
+			exports?: string;
 			files?: string[];
 			pi?: { extensions?: string[] };
 			peerDependencies?: Record<string, string>;
 		};
 
 		expect(pkg.private).toBeUndefined();
+		expect(pkg.exports).toBe("./index.ts");
 		expect(pkg.pi?.extensions).toEqual(["./extensions/delegate.ts"]);
-		expect(pkg.files).toEqual(["extensions", "README.md"]);
+		expect(pkg.files).toEqual(["extensions", "index.ts", "README.md"]);
 		expect(pkg.peerDependencies).toEqual({
 			"@mariozechner/pi-ai": "*",
 			"@mariozechner/pi-coding-agent": "*",
@@ -222,6 +226,120 @@ describe("delegate extension", () => {
 				},
 			],
 			details,
+		});
+	});
+
+	test("truncates delegated final output and stores the full text", async () => {
+		const output = await formatDelegateOutput("line\n".repeat(3000));
+
+		expect(output.truncation?.truncated).toBe(true);
+		expect(output.fullOutputFile).toBeString();
+		expect(output.text).toContain("Delegated output truncated");
+		expect(output.text).toContain(output.fullOutputFile ?? "missing-file");
+		const fullOutputFile = output.fullOutputFile;
+		if (!fullOutputFile) throw new Error("expected full output file");
+		expect(await Bun.file(fullOutputFile).text()).toBe("line\n".repeat(3000));
+		await unlink(fullOutputFile);
+	});
+
+	test("executes a child session, filters recursive tools, and returns final text", async () => {
+		let activeTools: string[] = [];
+		let disposed = false;
+		let reloaded = false;
+		let promptText = "";
+		type FakeAgentEvent = {
+			type: string;
+			toolName?: string;
+			isError?: boolean;
+			message?: {
+				role: string;
+				content: Array<{ type: string; text: string }>;
+			};
+		};
+		let listener: ((event: FakeAgentEvent) => void) | undefined;
+
+		mock.module("@mariozechner/pi-coding-agent", () => ({
+			DefaultResourceLoader: class {
+				async reload() {
+					reloaded = true;
+				}
+			},
+			SessionManager: {
+				inMemory: () => ({ kind: "memory-session" }),
+			},
+			createAgentSession: async () => ({
+				session: {
+					model: { provider: "openai-codex", id: "gpt-5.5" },
+					isStreaming: false,
+					abort: async () => {},
+					dispose: () => {
+						disposed = true;
+					},
+					getAllTools: () => [
+						{ name: "read" },
+						{ name: "delegate" },
+						{ name: "write" },
+						{ name: "subagent" },
+					],
+					prompt: async (text: string) => {
+						promptText = text;
+						listener?.({ type: "tool_execution_start", toolName: "read" });
+						listener?.({
+							type: "tool_execution_end",
+							toolName: "read",
+							isError: false,
+						});
+						listener?.({
+							type: "message_end",
+							message: {
+								role: "assistant",
+								content: [{ type: "text", text: "child final report" }],
+							},
+						});
+					},
+					setActiveToolsByName: (names: string[]) => {
+						activeTools = names;
+					},
+					subscribe: (fn: typeof listener) => {
+						listener = fn;
+						return () => {
+							listener = undefined;
+						};
+					},
+				},
+			}),
+			getAgentDir: () => "/tmp/pi-agent",
+		}));
+
+		const result = await getTool().execute(
+			"tool-call",
+			{ task: "inspect package", effort: "fast" },
+			undefined,
+			undefined,
+			{
+				cwd: "/workspace",
+				model: { provider: "openai-codex", id: "gpt-5.5" },
+				modelRegistry: {
+					find: () => ({ provider: "openai-codex", id: "gpt-5.5" }),
+					hasConfiguredAuth: () => true,
+				},
+			} as unknown as ExtensionContext,
+		);
+
+		expect(reloaded).toBe(true);
+		expect(disposed).toBe(true);
+		expect(promptText).toBe("inspect package");
+		expect(activeTools).toEqual(["read", "write"]);
+		expect(result.content).toEqual([
+			{ type: "text", text: "child final report" },
+		]);
+		expect(result.details).toMatchObject({
+			success: true,
+			effort: "fast",
+			toolCalls: 1,
+			failedToolCalls: 0,
+			timedOut: false,
+			aborted: false,
 		});
 	});
 });
