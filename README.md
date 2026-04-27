@@ -24,7 +24,8 @@ The tool runs a fresh in-memory child Pi agent in the current project, waits for
 - the child’s concise final report
 - model/effort metadata
 - duration
-- tool/error counts
+- child tool/error counts
+- child turn/token/cost usage when the provider reports usage
 - output truncation metadata when the final report is large
 - native tool errors with concise failure metadata when delegation fails
 
@@ -88,3 +89,21 @@ bun run check
 bun pm pack --dry-run
 PI_OFFLINE=1 bunx --bun pi --no-extensions -e . --list-models >/tmp/pi-delegate-pi-load.out
 ```
+
+## Live delegate evals
+
+`live-eval.test.ts` runs Pi in JSON mode against disposable fixture repos and compares delegate-enabled runs with a delegate-disabled control. It is opt-in locally because it uses live model calls:
+
+```bash
+PI_DELEGATE_LIVE=1 \
+PI_DELEGATE_EVAL_JUDGE_MODEL=<provider/model> \
+PI_DELEGATE_EVAL_TIMEOUT_MS=1800000 \
+PI_DELEGATE_EVAL_MAX_TOKENS=1500000 \
+PI_DELEGATE_EVAL_MAX_COST_USD=30 \
+PI_DELEGATE_EVAL_ARTIFACT_DIR=artifacts/live-eval \
+bun run test:live
+```
+
+Use `PI_DELEGATE_EVAL_TASKS=id1,id2` to run a subset while tuning the policy.
+
+The suite records sanitized JSONL traces plus `summary.json`. During baseline it hard-fails only crashes, budget overruns, read-only writes, and forbidden delegate calls; KPI scores are reported for threshold calibration.

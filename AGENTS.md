@@ -25,3 +25,9 @@ bun run check
 bun pm pack --dry-run
 PI_OFFLINE=1 bunx --bun pi --no-extensions -e . --list-models >/tmp/pi-delegate-pi-load.out
 ```
+
+Live KPI evals run in CI with model credentials and budgets. Run locally only when configured:
+
+```bash
+PI_DELEGATE_LIVE=1 bun run test:live
+```

@@ -23,6 +23,11 @@ import { Text } from "@mariozechner/pi-tui";
 const TOOL_NAME = "delegate";
 const TIMEOUT_MS = 15 * 60 * 1000;
 const REQUESTED_MODEL = "openai-codex/gpt-5.5";
+const DELEGATE_DECISION_PROMPT = `Delegation decision policy:
+- If delegate is available and the user asks for broad repo scanning, noisy investigation, current library/API research, independent code review, plan critique, or non-trivial code changes with verification, call delegate once early before doing direct exploration or edits.
+- Do not delegate trivial fact lookups, obvious typo/format/text-only edits, or work the parent can finish with one or two cheap local tool calls.
+- For read-only work, pass read-only constraints to delegate. For write-capable work, delegate only when the user's request allows edits.`;
+
 const DELEGATE_PROMPT = `You are a delegated child Pi agent running in a fresh context for a parent agent.
 
 Your contract:
@@ -69,6 +74,16 @@ type DelegateParams = Static<typeof DelegateParams>;
 export type DelegateEffort = "fast" | "balanced" | "smart";
 export type DelegateThinking = "minimal" | "medium" | "high";
 
+export interface DelegateUsageStats {
+	turns: number;
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	totalTokens: number;
+	cost: number;
+}
+
 export interface DelegateDetails {
 	success: boolean;
 	effort: DelegateEffort;
@@ -79,6 +94,7 @@ export interface DelegateDetails {
 	durationMs: number;
 	toolCalls: number;
 	failedToolCalls: number;
+	childUsage: DelegateUsageStats;
 	timedOut: boolean;
 	aborted: boolean;
 	error?: string;
@@ -218,6 +234,22 @@ export function resolveDelegateModel(ctx: ExtensionContext): {
 	};
 }
 
+function emptyUsageStats(): DelegateUsageStats {
+	return {
+		turns: 0,
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: 0,
+	};
+}
+
+function copyUsageStats(stats: DelegateUsageStats): DelegateUsageStats {
+	return { ...stats };
+}
+
 function formatDuration(ms: number): string {
 	if (ms < 1000) return `${ms}ms`;
 	if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
@@ -243,20 +275,27 @@ function formatStatusParts(details: DelegateDetails): string {
 }
 
 export default function delegateExtension(pi: ExtensionAPI) {
+	pi.on("before_agent_start", (event) => {
+		if (!event.systemPromptOptions.selectedTools?.includes(TOOL_NAME)) return;
+		return {
+			systemPrompt: `${event.systemPrompt}\n\n${DELEGATE_DECISION_PROMPT}`,
+		};
+	});
+
 	pi.registerTool<typeof DelegateParams, DelegateDetails>({
 		name: TOOL_NAME,
 		label: "Delegate",
 		description:
-			"Run a fresh child Pi agent for subagent/delegated work. Use when you want an isolated worker for investigation, research, review, broad repo scanning, or a narrow implementation while keeping the parent context clean. The parent receives only the child’s final report. The child has normal Pi tools and may modify files; delegate write-capable tasks only when user intent permits edits.",
+			"Run a fresh child Pi agent for subagent/delegated work. Use delegate as required policy for non-trivial investigation, research, review, broad repo scanning, plan critique, or focused implementation when isolation would keep the parent context clean. The parent receives only the child’s final report. The child has normal Pi tools and may modify files; delegate write-capable tasks only when user intent permits edits.",
 		promptSnippet:
-			"Run an isolated child Pi agent for subagent/delegation work; returns only the child’s concise final result.",
+			"MUST use for broad/noisy/research/review/plan work and non-trivial code fixes with tests; delegates to an isolated child Pi agent and returns only the child’s final result.",
 		promptGuidelines: [
-			"Use delegate whenever you want to invoke a subagent, spin off a delegated worker, or isolate exploration from the main conversation.",
-			"Use delegate for broad repo scans, noisy investigation, library/API research, independent code review, plan critique, or narrow implementation tasks whose intermediate context should not pollute the parent context.",
-			"Do not manually simulate a subagent in chat; if a separate worker would help, call delegate with a self-contained task.",
+			"Delegate policy: for broad repo scanning, noisy investigation, current library/API research, independent code review, plan critique, non-trivial code modification, or focused implementation with verification, call delegate exactly once early unless the user forbids delegation; this policy applies even when the repo or task looks small.",
+			"For prompts asking to research, investigate, review, critique, map, or fix failing behavior with tests, call delegate before doing your own read/find/bash/web research; do not implement these tasks directly unless they are explicitly a trivial typo/single-line edit.",
+			"Use delegate as the required way to invoke a subagent or delegated worker; do not manually simulate a subagent in chat.",
 			"When calling delegate, include the objective, relevant context/files, constraints, whether edits are allowed, expected output, and verification requirements.",
-			"Use delegate for write-capable tasks only when user intent allows edits; mark the task read-only for investigation, research, or review.",
-			"Do not use delegate for trivial local edits or questions the parent can answer cheaply; delegation should buy isolation, parallel reasoning, or reduced context noise.",
+			"Use delegate for write-capable tasks only when user intent allows edits; mark investigation, research, review, and critique tasks read-only.",
+			"Do not use delegate for trivial fact lookups, obvious typo/format/text-only edits, or questions the parent can answer with one or two cheap local tool calls; failing tests and behavior bugs are not trivial edits.",
 		],
 		parameters: DelegateParams,
 		executionMode: "sequential",
@@ -267,6 +306,7 @@ export default function delegateExtension(pi: ExtensionAPI) {
 			const modelChoice = resolveDelegateModel(ctx);
 			let toolCalls = 0;
 			let failedToolCalls = 0;
+			const childUsage = emptyUsageStats();
 			let lastAssistantText = "";
 			let timedOut = false;
 			let aborted = false;
@@ -287,6 +327,7 @@ export default function delegateExtension(pi: ExtensionAPI) {
 				durationMs: Date.now() - startedAt,
 				toolCalls,
 				failedToolCalls,
+				childUsage: copyUsageStats(childUsage),
 				timedOut,
 				aborted,
 			});
@@ -340,6 +381,15 @@ export default function delegateExtension(pi: ExtensionAPI) {
 					if (event.type !== "message_end") return;
 					const text = extractAssistantText(event.message);
 					if (text) lastAssistantText = text;
+					if (event.message.role !== "assistant") return;
+					const usage = event.message.usage;
+					childUsage.turns++;
+					childUsage.input += usage.input;
+					childUsage.output += usage.output;
+					childUsage.cacheRead += usage.cacheRead;
+					childUsage.cacheWrite += usage.cacheWrite;
+					childUsage.totalTokens += usage.totalTokens;
+					childUsage.cost += usage.cost.total;
 				});
 
 				const timeoutPromise = new Promise<never>((_, reject) => {
@@ -404,6 +454,7 @@ export default function delegateExtension(pi: ExtensionAPI) {
 				durationMs: Date.now() - startedAt,
 				toolCalls,
 				failedToolCalls,
+				childUsage: copyUsageStats(childUsage),
 				timedOut,
 				aborted,
 				outputTruncated: output.truncation?.truncated,

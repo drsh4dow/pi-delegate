@@ -21,16 +21,34 @@ function getTool(): DelegateTool {
 	let tool: unknown;
 
 	delegateExtension({
-		registerTool(definition) {
+		on: () => {},
+		registerTool(definition: DelegateTool) {
 			tool = definition;
 		},
-	} as ExtensionAPI);
+	} as unknown as ExtensionAPI);
 
 	if (!tool) {
 		throw new Error("delegate tool was not registered");
 	}
 
 	return tool as DelegateTool;
+}
+
+function getBeforeAgentStartHandler() {
+	let handler: unknown;
+	delegateExtension({
+		on(event: string, fn: unknown) {
+			if (event === "before_agent_start") handler = fn;
+		},
+		registerTool: () => {},
+	} as unknown as ExtensionAPI);
+	if (typeof handler !== "function") {
+		throw new Error("before_agent_start handler was not registered");
+	}
+	return handler as (event: {
+		systemPrompt: string;
+		systemPromptOptions: { selectedTools?: string[] };
+	}) => { systemPrompt: string } | undefined;
 }
 
 function fakeContext(input: {
@@ -74,17 +92,29 @@ describe("delegate extension", () => {
 		expect(tool.label).toBe("Delegate");
 		expect(tool.executionMode).toBe("sequential");
 		expect(tool.description).toContain("subagent/delegated work");
+		expect(tool.description).toContain("required policy");
 		expect(tool.description).toContain("final report");
 		expect(tool.description).toContain("may modify files");
-		expect(tool.promptSnippet).toContain("subagent/delegation");
+		expect(tool.promptSnippet).toContain("MUST use");
+		expect(tool.promptSnippet).toContain("non-trivial code fixes with tests");
 		expect(promptGuidelines).toHaveLength(6);
 		const joinedGuidelines = promptGuidelines.join("\n");
-		expect(joinedGuidelines).toContain("invoke a subagent");
-		expect(joinedGuidelines).toContain("broad repo scans");
-		expect(joinedGuidelines).toContain("Do not manually simulate a subagent");
-		expect(joinedGuidelines).toContain("self-contained task");
+		expect(joinedGuidelines).toContain("Delegate policy");
+		expect(joinedGuidelines).toContain("broad repo scanning");
+		expect(joinedGuidelines).toContain("non-trivial code modification");
+		expect(joinedGuidelines).toContain("call delegate exactly once early");
+		expect(joinedGuidelines).toContain(
+			"even when the repo or task looks small",
+		);
+		expect(joinedGuidelines).toContain("fix failing behavior with tests");
+		expect(joinedGuidelines).toContain("do not implement these tasks directly");
+		expect(joinedGuidelines).toContain(
+			"before doing your own read/find/bash/web research",
+		);
+		expect(joinedGuidelines).toContain("required way to invoke a subagent");
 		expect(joinedGuidelines).toContain("read-only");
-		expect(joinedGuidelines).toContain("trivial local edits");
+		expect(joinedGuidelines).toContain("obvious typo/format/text-only edits");
+		expect(joinedGuidelines).toContain("behavior bugs are not trivial edits");
 		expect(parameters.properties.task?.description).toContain(
 			"Self-contained task",
 		);
@@ -100,6 +130,23 @@ describe("delegate extension", () => {
 			"effort",
 			"task",
 		]);
+	});
+
+	test("adds delegate decision policy only when delegate is active", () => {
+		const handler = getBeforeAgentStartHandler();
+
+		expect(
+			handler({
+				systemPrompt: "base",
+				systemPromptOptions: { selectedTools: ["read", "delegate"] },
+			})?.systemPrompt,
+		).toContain("Delegation decision policy");
+		expect(
+			handler({
+				systemPrompt: "base",
+				systemPromptOptions: { selectedTools: ["read"] },
+			}),
+		).toBeUndefined();
 	});
 
 	test("child prompt defines the delegated worker contract", async () => {
@@ -224,6 +271,15 @@ describe("delegate extension", () => {
 			durationMs: 123,
 			toolCalls: 2,
 			failedToolCalls: 1,
+			childUsage: {
+				turns: 0,
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: 0,
+			},
 			timedOut: false,
 			aborted: false,
 		};
@@ -289,6 +345,7 @@ describe("delegate extension", () => {
 			message?: {
 				role: string;
 				content: Array<{ type: string; text: string }>;
+				usage?: unknown;
 			};
 		};
 		let listener: ((event: FakeAgentEvent) => void) | undefined;
@@ -337,6 +394,20 @@ describe("delegate extension", () => {
 							message: {
 								role: "assistant",
 								content: [{ type: "text", text: "child final report" }],
+								usage: {
+									input: 10,
+									output: 5,
+									cacheRead: 2,
+									cacheWrite: 1,
+									totalTokens: 18,
+									cost: {
+										input: 0.01,
+										output: 0.02,
+										cacheRead: 0.001,
+										cacheWrite: 0.002,
+										total: 0.033,
+									},
+								},
 							},
 						});
 					},
@@ -397,6 +468,15 @@ describe("delegate extension", () => {
 			failedToolCalls: 0,
 			timedOut: false,
 			aborted: false,
+			childUsage: {
+				turns: 1,
+				input: 10,
+				output: 5,
+				cacheRead: 2,
+				cacheWrite: 1,
+				totalTokens: 18,
+				cost: 0.033,
+			},
 		});
 
 		await expect(
