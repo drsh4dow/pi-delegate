@@ -16,6 +16,7 @@ const { PI_DELEGATE_LIVE } = process.env;
 const liveEnabled = PI_DELEGATE_LIVE === "1";
 
 type DelegateExpectation = "required" | "allowed" | "forbidden";
+type DelegateEffort = "fast" | "balanced" | "smart";
 
 type UsageSummary = {
 	turns: number;
@@ -30,6 +31,7 @@ type UsageSummary = {
 type FixtureTask = {
 	id: string;
 	expectDelegate: DelegateExpectation;
+	expectedDelegateEffort?: DelegateEffort;
 	readOnly: boolean;
 	prompt: string;
 	expectedOutcome: string;
@@ -44,6 +46,7 @@ type RunSummary = {
 	delegateCalls: number;
 	delegateSucceeded: number;
 	delegateFailed: number;
+	delegateEfforts: DelegateEffort[];
 	parentUsage: UsageSummary;
 	childUsage: UsageSummary;
 	finalText: string;
@@ -74,6 +77,7 @@ type CaseAttempt = {
 	judgement?: JudgeResult;
 	hardFailures: string[];
 	decisionScore: number;
+	effortScore: number;
 	enabledQuality: number | null;
 	disabledQuality: number | null;
 };
@@ -203,10 +207,19 @@ const scoreDecision = (
 	return 1;
 };
 
+const scoreEffort = (
+	expected: DelegateEffort | undefined,
+	actual: DelegateEffort[],
+): number => {
+	if (!expected) return 1;
+	return actual.includes(expected) ? 1 : 0;
+};
+
 const liveTasks: FixtureTask[] = [
 	{
 		id: "broad-repo-scan",
 		expectDelegate: "required",
+		expectedDelegateEffort: "fast",
 		readOnly: true,
 		prompt:
 			"Map this small repository for a maintainer. Identify the public API, data flow, two risks, and the files you inspected. Do not modify files.",
@@ -225,6 +238,7 @@ const liveTasks: FixtureTask[] = [
 	{
 		id: "noisy-investigation",
 		expectDelegate: "required",
+		expectedDelegateEffort: "smart",
 		readOnly: true,
 		prompt:
 			"Investigate why totals sometimes differ between checkout and invoices. This is read-only. Report the root cause, exact files, and the smallest safe fix.",
@@ -246,6 +260,7 @@ const liveTasks: FixtureTask[] = [
 	{
 		id: "library-api-research",
 		expectDelegate: "required",
+		expectedDelegateEffort: "fast",
 		readOnly: true,
 		prompt:
 			"Research how this project should consume the local fake library. Do not edit files. Compare the current usage with the library docs and report the API mismatch.",
@@ -265,6 +280,7 @@ const liveTasks: FixtureTask[] = [
 	{
 		id: "independent-review",
 		expectDelegate: "required",
+		expectedDelegateEffort: "smart",
 		readOnly: true,
 		prompt:
 			"Do an independent code review of the proposed change. Do not modify files. Focus on correctness, missing tests, and migration risk.",
@@ -282,6 +298,7 @@ const liveTasks: FixtureTask[] = [
 	{
 		id: "plan-critique",
 		expectDelegate: "required",
+		expectedDelegateEffort: "smart",
 		readOnly: true,
 		prompt:
 			"Critique the migration plan as a skeptical reviewer. Do not edit files. Identify missing sequencing, rollback, and validation work.",
@@ -299,6 +316,7 @@ const liveTasks: FixtureTask[] = [
 	{
 		id: "narrow-implementation",
 		expectDelegate: "required",
+		expectedDelegateEffort: "balanced",
 		readOnly: false,
 		prompt:
 			"Fix the failing discount behavior in this tiny package. Keep the change focused and run the relevant test.",
@@ -330,6 +348,7 @@ const liveTasks: FixtureTask[] = [
 	{
 		id: "small-review",
 		expectDelegate: "allowed",
+		expectedDelegateEffort: "smart",
 		readOnly: true,
 		prompt: "Review this small parser for edge cases. Do not edit files.",
 		expectedOutcome:
@@ -443,6 +462,7 @@ function parseRun(
 	let delegateCalls = 0;
 	let delegateSucceeded = 0;
 	let delegateFailed = 0;
+	const delegateEfforts: DelegateEffort[] = [];
 	let jsonParseErrors = 0;
 
 	for (const line of run.stdout.split(/\r?\n/)) {
@@ -458,12 +478,20 @@ function parseRun(
 		const e = event as {
 			type?: string;
 			toolName?: string;
+			args?: { effort?: unknown };
 			isError?: boolean;
 			message?: { role?: string; usage?: unknown };
 			result?: { details?: { childUsage?: UsageSummary } };
 		};
 		if (e.type === "tool_execution_start" && e.toolName === "delegate") {
 			delegateCalls++;
+			if (
+				e.args?.effort === "fast" ||
+				e.args?.effort === "balanced" ||
+				e.args?.effort === "smart"
+			) {
+				delegateEfforts.push(e.args.effort);
+			}
 		}
 		if (e.type === "tool_execution_end" && e.toolName === "delegate") {
 			if (e.isError) delegateFailed++;
@@ -486,6 +514,7 @@ function parseRun(
 		delegateCalls,
 		delegateSucceeded,
 		delegateFailed,
+		delegateEfforts,
 		parentUsage,
 		childUsage,
 		finalText,
@@ -666,6 +695,7 @@ async function runCaseAttempt(
 			delegateCalls: 0,
 			delegateSucceeded: 0,
 			delegateFailed: 0,
+			delegateEfforts: [],
 			parentUsage: emptyUsage(),
 			childUsage: emptyUsage(),
 			finalText: "",
@@ -682,6 +712,10 @@ async function runCaseAttempt(
 		judge,
 		judgement,
 		decisionScore: scoreDecision(task.expectDelegate, enabled.delegateCalls),
+		effortScore: scoreEffort(
+			task.expectedDelegateEffort,
+			enabled.delegateEfforts,
+		),
 		enabledQuality: scoreAverage(judgement?.enabled.scores),
 		disabledQuality: scoreAverage(judgement?.disabled.scores),
 	};
@@ -732,6 +766,14 @@ describe("live eval scoring", () => {
 		expect(scoreDecision("forbidden", 1)).toBe(0);
 	});
 
+	test("scores delegate effort when a task has an expected effort", () => {
+		expect(scoreEffort(undefined, [])).toBe(1);
+		expect(scoreEffort("fast", ["fast"])).toBe(1);
+		expect(scoreEffort("smart", ["fast", "smart"])).toBe(1);
+		expect(scoreEffort("balanced", ["fast"])).toBe(0);
+		expect(scoreEffort("smart", [])).toBe(0);
+	});
+
 	test("selects a requested task subset", () => {
 		expect(
 			selectedTasks("broad-repo-scan,trivial-answer").map((task) => task.id),
@@ -743,6 +785,7 @@ describe("live eval scoring", () => {
 			JSON.stringify({
 				type: "tool_execution_start",
 				toolName: "delegate",
+				args: { effort: "smart" },
 			}),
 			JSON.stringify({
 				type: "tool_execution_end",
@@ -788,6 +831,7 @@ describe("live eval scoring", () => {
 		);
 		expect(summary.delegateCalls).toBe(1);
 		expect(summary.delegateSucceeded).toBe(1);
+		expect(summary.delegateEfforts).toEqual(["smart"]);
 		expect(summary.finalText).toBe("done");
 		expect(summary.parentUsage.totalTokens).toBe(13);
 		expect(summary.childUsage.totalTokens).toBe(7);
@@ -852,6 +896,9 @@ describe("live eval scoring", () => {
 			const decisionScore =
 				attempts.reduce((sum, attempt) => sum + attempt.decisionScore, 0) /
 				attempts.length;
+			const effortScore =
+				attempts.reduce((sum, attempt) => sum + attempt.effortScore, 0) /
+				attempts.length;
 			const enabledQuality = attempts
 				.map((attempt) => attempt.enabledQuality)
 				.filter((value): value is number => value !== null);
@@ -870,6 +917,7 @@ describe("live eval scoring", () => {
 				},
 				kpis: {
 					decisionScore,
+					effortScore,
 					enabledQuality:
 						enabledQuality.reduce((sum, value) => sum + value, 0) /
 						enabledQuality.length,

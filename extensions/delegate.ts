@@ -23,9 +23,12 @@ import { Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
 
 const TOOL_NAME = "delegate";
 const TIMEOUT_MS = 15 * 60 * 1000;
+const COLLAPSED_PREVIEW_LINES = 4;
+const COLLAPSED_PREVIEW_CHARS = 360;
 const REQUESTED_MODEL = "openai-codex/gpt-5.5";
 const DELEGATE_DECISION_PROMPT = `Delegation decision policy:
 - If delegate is available and the user asks for broad repo scanning, noisy investigation, current library/API research, independent code review, plan critique, or non-trivial code changes with verification, call delegate once early before doing direct exploration or edits.
+- Choose effort explicitly: fast for scouting/recon/repo mapping/docs/API lookup, smart for review/critique/debugging/ambiguous or high-risk design, balanced for ordinary focused implementation or moderate investigation.
 - Do not delegate trivial fact lookups, obvious typo/format/text-only edits, or work the parent can finish with one or two cheap local tool calls.
 - For read-only work, pass read-only constraints to delegate. For write-capable work, delegate only when the user's request allows edits.`;
 
@@ -65,7 +68,7 @@ const DelegateParams = Type.Object({
 	effort: Type.Optional(
 		StringEnum(["fast", "balanced", "smart"], {
 			description:
-				"Speed vs depth for the child agent. fast=quick reconnaissance/simple tasks, balanced=normal investigation or edits, smart=ambiguous/high-risk design, debugging, or review.",
+				"Speed vs depth for the child agent. Choose explicitly: fast=scouting/recon/repo mapping/docs/API lookup, smart=review/critique/debugging/ambiguous or high-risk design, balanced=ordinary focused implementation or moderate investigation. Omitted effort falls back to balanced for compatibility.",
 			default: "balanced",
 		}),
 	),
@@ -305,6 +308,23 @@ function formatStatusParts(details: DelegateDetails): string {
 	return text;
 }
 
+function formatCollapsedPreview(text: string): string {
+	const lines = text
+		.trim()
+		.split(/\r?\n/)
+		.map((line) => line.trimEnd())
+		.filter((line) => line.trim().length > 0);
+	if (lines.length === 0) return "";
+
+	let truncated = lines.length > COLLAPSED_PREVIEW_LINES;
+	let preview = lines.slice(0, COLLAPSED_PREVIEW_LINES).join("\n");
+	if (preview.length > COLLAPSED_PREVIEW_CHARS) {
+		preview = preview.slice(0, COLLAPSED_PREVIEW_CHARS - 1).trimEnd();
+		truncated = true;
+	}
+	return truncated ? `${preview}\n…` : preview;
+}
+
 export default function delegateExtension(pi: ExtensionAPI) {
 	pi.on("before_agent_start", (event) => {
 		if (!event.systemPromptOptions.selectedTools?.includes(TOOL_NAME)) return;
@@ -324,7 +344,8 @@ export default function delegateExtension(pi: ExtensionAPI) {
 			"Delegate policy: for broad repo scanning, noisy investigation, current library/API research, independent code review, plan critique, non-trivial code modification, or focused implementation with verification, call delegate exactly once early unless the user forbids delegation; this policy applies even when the repo or task looks small.",
 			"For prompts asking to research, investigate, review, critique, map, or fix failing behavior with tests, call delegate before doing your own read/find/bash/web research; do not implement these tasks directly unless they are explicitly a trivial typo/single-line edit.",
 			"Use delegate as the required way to invoke a subagent or delegated worker; do not manually simulate a subagent in chat.",
-			"When calling delegate, include the objective, relevant context/files, constraints, whether edits are allowed, expected output, and verification requirements.",
+			"When calling delegate, include the objective, relevant context/files, constraints, whether edits are allowed, expected output, verification requirements, and an explicit effort.",
+			"When calling delegate, choose effort explicitly: fast for scouting/recon/repo mapping/docs/API lookup; smart for review/critique/debugging/ambiguous or high-risk design; balanced for ordinary focused implementation or moderate investigation.",
 			"Use delegate for write-capable tasks only when user intent allows edits; mark investigation, research, review, and critique tasks read-only.",
 			"Do not use delegate for trivial fact lookups, obvious typo/format/text-only edits, or questions the parent can answer with one or two cheap local tool calls; failing tests and behavior bugs are not trivial edits.",
 		],
@@ -547,10 +568,21 @@ export default function delegateExtension(pi: ExtensionAPI) {
 			}
 			if (details?.success === true) {
 				const line = renderStatus("done", "success", details, true);
-				if (!options.expanded) return new Text(line, 0, 0);
-
 				const content = result.content[0];
 				const output = content?.type === "text" ? content.text : "";
+				if (!options.expanded) {
+					const preview = formatCollapsedPreview(output);
+					if (!preview) return new Text(line, 0, 0);
+
+					const container = new Container();
+					container.addChild(new Text(line, 0, 0));
+					container.addChild(
+						new Text(theme.fg("muted", "─── child report preview ───"), 0, 0),
+					);
+					container.addChild(new Text(theme.fg("toolOutput", preview), 0, 0));
+					return container;
+				}
+
 				const detailedUsage = formatDetailedUsage(details.childUsage);
 				const container = new Container();
 				container.addChild(new Text(line, 0, 0));

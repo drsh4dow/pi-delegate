@@ -38,7 +38,7 @@ The main agent never sees the child’s intermediate exploration.
 Parameters:
 
 - `task`: the task for the child agent
-- `effort`: optional `fast | balanced | smart` — default `balanced`
+- `effort`: optional `fast | balanced | smart` — default `balanced` for compatibility, but callers should choose explicitly
 
 Effort maps to one model with different thinking levels:
 
@@ -47,6 +47,8 @@ Effort maps to one model with different thinking levels:
 | `fast` | `openai-codex/gpt-5.5` | `minimal` |
 | `balanced` | `openai-codex/gpt-5.5` | `medium` |
 | `smart` | `openai-codex/gpt-5.5` | `high` |
+
+Choose `fast` for scouting, repo mapping, docs/API lookup, and quick read-only recon. Choose `smart` for review, critique, debugging, ambiguous design, and high-risk reasoning. Use `balanced` for ordinary focused implementation or moderate investigation.
 
 If `openai-codex/gpt-5.5` is missing or unauthenticated, `delegate` falls back to the parent model and reports the fallback in metadata.
 
@@ -59,7 +61,7 @@ If `openai-codex/gpt-5.5` is missing or unauthenticated, `delegate` falls back t
 - recursive delegation tools are disabled inside the child
 - sequential execution to avoid concurrent delegated writes
 - 15-minute internal timeout
-- running calls render as neutral progress, not failure; the collapsed row shows short model id, elapsed time, and child tool count
+- running calls render as neutral progress, not failure; the collapsed row shows short model id, elapsed time, child tool count, and a small completed-report preview
 - failures throw native Pi tool errors with a concise reason plus model/duration/tool-count metadata
 - final child output is truncated at Pi's standard 2000-line/50KB tool-output limits, with the full report saved to a temp file when truncation occurs
 - normal Pi tools are available to the child, including write-capable tools; this is intentional and enforced by prompt/user intent rather than by a read-only tool sandbox
@@ -106,4 +108,4 @@ bun run test:live
 
 Use `PI_DELEGATE_EVAL_TASKS=id1,id2` to run a subset while tuning the policy.
 
-The suite records sanitized JSONL traces plus `summary.json`. During baseline it hard-fails only crashes, budget overruns, read-only writes, and forbidden delegate calls; KPI scores are reported for threshold calibration.
+The suite records sanitized JSONL traces plus `summary.json`, including delegate decision and effort-selection KPIs. During baseline it hard-fails only crashes, budget overruns, read-only writes, and forbidden delegate calls; KPI scores are reported for threshold calibration.
