@@ -57,7 +57,7 @@ If `openai-codex/gpt-5.5` is missing or unauthenticated, `delegate` falls back t
 - fresh in-memory child session
 - parent cwd
 - project context files loaded through Pi's normal resource discovery
-- extensions and package resources discovered from the child session's cwd/agent directory are loaded; ad-hoc parent runtime state is not treated as an API guarantee
+- extensions and package resources discovered from the child session's cwd/agent directory are loaded; ad-hoc extension paths listed in `PI_CHILD_EXTENSION_PATHS` are also loaded in the child
 - recursive delegation tools are disabled inside the child
 - sequential execution to avoid concurrent delegated writes
 - 15-minute internal timeout

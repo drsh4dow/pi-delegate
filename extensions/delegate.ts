@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { type Static, StringEnum, Type } from "@mariozechner/pi-ai";
 import {
 	type AgentSessionEvent,
@@ -28,6 +28,7 @@ const COLLAPSED_PREVIEW_LINES = 4;
 const COLLAPSED_PREVIEW_CHARS = 360;
 const TASK_PREVIEW_CHARS = 84;
 const REQUESTED_MODEL = "openai-codex/gpt-5.5";
+export const CHILD_EXTENSION_PATHS_ENV = "PI_CHILD_EXTENSION_PATHS";
 const DELEGATE_DECISION_PROMPT = `Delegation decision policy:
 - If delegate is available and the user asks for broad repo scanning, noisy investigation, current library/API research, independent code review, plan critique, or non-trivial code changes with verification, call delegate once early before doing direct exploration or edits.
 - Choose effort explicitly: fast for scouting/recon/repo mapping/docs/API lookup, smart for review/critique/debugging/ambiguous or high-risk design, balanced for ordinary focused implementation or moderate investigation.
@@ -240,6 +241,20 @@ export function resolveDelegateModel(ctx: ExtensionContext): {
 	};
 }
 
+export function childExtensionPaths(
+	env: Record<string, string | undefined> = process.env,
+): string[] {
+	const seen = new Set<string>();
+	const paths: string[] = [];
+	for (const raw of (env[CHILD_EXTENSION_PATHS_ENV] ?? "").split(delimiter)) {
+		const path = raw.trim();
+		if (!path || seen.has(path)) continue;
+		seen.add(path);
+		paths.push(path);
+	}
+	return paths;
+}
+
 function emptyUsageStats(): DelegateUsageStats {
 	return {
 		turns: 0,
@@ -435,6 +450,7 @@ export default function delegateExtension(pi: ExtensionAPI) {
 				const resourceLoader = new DefaultResourceLoader({
 					cwd: ctx.cwd,
 					agentDir: getAgentDir(),
+					additionalExtensionPaths: childExtensionPaths(),
 					appendSystemPrompt: [DELEGATE_PROMPT],
 				});
 

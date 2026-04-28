@@ -1,11 +1,14 @@
 import { describe, expect, mock, test } from "bun:test";
 import { unlink } from "node:fs/promises";
+import { delimiter } from "node:path";
 import {
 	type ExtensionAPI,
 	type ExtensionContext,
 	initTheme,
 } from "@mariozechner/pi-coding-agent";
 import delegateExtension, {
+	CHILD_EXTENSION_PATHS_ENV,
+	childExtensionPaths,
 	DEFAULT_DELEGATE_MODEL,
 	DELEGATION_TOOL_DENYLIST,
 	type DelegateDetails,
@@ -237,6 +240,14 @@ describe("delegate extension", () => {
 
 		expect(choice.model).toBe(parent);
 		expect(choice.fallbackReason).toContain("no configured auth");
+	});
+
+	test("reads inherited child extension paths from the environment", () => {
+		expect(
+			childExtensionPaths({
+				[CHILD_EXTENSION_PATHS_ENV]: `/tmp/a${delimiter}/tmp/b${delimiter}/tmp/a${delimiter}  `,
+			}),
+		).toEqual(["/tmp/a", "/tmp/b"]);
 	});
 
 	test("filters recursive delegation tools from child tools", () => {
@@ -583,6 +594,9 @@ describe("delegate extension", () => {
 		let disposeCount = 0;
 		let reloaded = false;
 		let promptText = "";
+		let resourceLoaderOptions:
+			| { additionalExtensionPaths?: string[] }
+			| undefined;
 		const updates: DelegateDetails[] = [];
 		type FakeAgentEvent = {
 			type: string;
@@ -598,6 +612,10 @@ describe("delegate extension", () => {
 
 		mock.module("@mariozechner/pi-coding-agent", () => ({
 			DefaultResourceLoader: class {
+				constructor(options: { additionalExtensionPaths?: string[] }) {
+					resourceLoaderOptions = options;
+				}
+
 				async reload() {
 					reloaded = true;
 				}
@@ -671,6 +689,9 @@ describe("delegate extension", () => {
 			getAgentDir: () => "/tmp/pi-agent",
 		}));
 
+		const previousChildExtensionPaths = process.env[CHILD_EXTENSION_PATHS_ENV];
+		process.env[CHILD_EXTENSION_PATHS_ENV] =
+			`/tmp/telemetry-a${delimiter}/tmp/telemetry-b`;
 		const tool = getTool();
 		const context = {
 			cwd: "/workspace",
@@ -689,7 +710,13 @@ describe("delegate extension", () => {
 			context,
 		);
 
+		process.env[CHILD_EXTENSION_PATHS_ENV] = previousChildExtensionPaths;
+
 		expect(reloaded).toBe(true);
+		expect(resourceLoaderOptions?.additionalExtensionPaths).toEqual([
+			"/tmp/telemetry-a",
+			"/tmp/telemetry-b",
+		]);
 		expect(disposeCount).toBe(1);
 		expect(promptText).toBe("inspect package");
 		expect(activeTools).toEqual(["read", "write"]);
