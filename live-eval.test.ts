@@ -14,7 +14,13 @@ import { fileURLToPath } from "node:url";
 const repoRoot = dirname(fileURLToPath(import.meta.url));
 const { PI_DELEGATE_LIVE } = process.env;
 const liveEnabled = PI_DELEGATE_LIVE === "1";
-const defaultJudgeModel = "openai/gpt-5.5";
+const defaultEvalModel = "openai/gpt-5.5:minimal";
+const defaultJudgeModel = defaultEvalModel;
+
+function evalModel() {
+	const { PI_DELEGATE_EVAL_MODEL } = process.env;
+	return PI_DELEGATE_EVAL_MODEL?.trim() || defaultEvalModel;
+}
 
 function evalJudgeModel() {
 	const { PI_DELEGATE_EVAL_JUDGE_MODEL } = process.env;
@@ -86,6 +92,12 @@ type CaseAttempt = {
 	effortScore: number;
 	enabledQuality: number | null;
 	disabledQuality: number | null;
+};
+
+type EvalTimeouts = {
+	agentMs: number;
+	judgeMs: number;
+	postCheckMs: number;
 };
 
 const emptyUsage = (): UsageSummary => ({
@@ -635,6 +647,7 @@ async function runPi(
 	cwd: string,
 	artifact: string,
 	timeoutMs: number,
+	model: string,
 ) {
 	const args = [
 		"--bun",
@@ -646,6 +659,8 @@ async function runPi(
 		"--no-skills",
 		"--no-prompt-templates",
 		"--no-context-files",
+		"--model",
+		model,
 	];
 	if (mode === "enabled") args.push("-e", repoRoot);
 	args.push(prompt);
@@ -713,7 +728,8 @@ async function runAgentSide(
 	mode: "enabled" | "disabled",
 	task: FixtureTask,
 	attemptDir: string,
-	timeoutMs: number,
+	timeouts: EvalTimeouts,
+	model: string,
 ): Promise<RunSummary> {
 	const fixture = await mkdtemp(
 		join(tmpdir(), `pi-delegate-${task.id}-${mode}-`),
@@ -722,8 +738,15 @@ async function runAgentSide(
 		await writeFixture(task, fixture);
 		const before = await snapshotFiles(fixture);
 		const artifact = join(attemptDir, `${mode}.jsonl`);
-		const run = await runPi(mode, task.prompt, fixture, artifact, timeoutMs);
-		const postCheck = await runPostCheck(task, fixture, timeoutMs);
+		const run = await runPi(
+			mode,
+			task.prompt,
+			fixture,
+			artifact,
+			timeouts.agentMs,
+			model,
+		);
+		const postCheck = await runPostCheck(task, fixture, timeouts.postCheckMs);
 		const after = await snapshotFiles(fixture);
 		const readOnlyChangedFiles = task.readOnly
 			? changedFiles(before, after)
@@ -768,45 +791,55 @@ async function runCaseAttempt(
 	task: FixtureTask,
 	attempt: number,
 	artifactDir: string,
-	timeoutMs: number,
+	timeouts: EvalTimeouts,
+	model: string,
 ): Promise<CaseAttempt> {
 	const attemptDir = join(artifactDir, task.id, `attempt-${attempt}`);
 	await mkdir(attemptDir, { recursive: true });
-	console.log(`[live-eval] ${task.id}/attempt-${attempt}: enabled run`);
-	const enabled = await runAgentSide("enabled", task, attemptDir, timeoutMs);
-	console.log(`[live-eval] ${task.id}/attempt-${attempt}: disabled run`);
-	const disabled = await runAgentSide("disabled", task, attemptDir, timeoutMs);
+	console.log(
+		`[live-eval] ${task.id}/attempt-${attempt}: enabled + disabled runs`,
+	);
+	const [enabled, disabled] = await Promise.all([
+		runAgentSide("enabled", task, attemptDir, timeouts, model),
+		runAgentSide("disabled", task, attemptDir, timeouts, model),
+	]);
 	let judge: RunSummary | undefined;
 	let judgement: JudgeResult | undefined;
-	try {
-		console.log(`[live-eval] ${task.id}/attempt-${attempt}: judge run`);
-		const judged = await runJudge(
-			task,
-			enabled,
-			disabled,
-			attemptDir,
-			join(attemptDir, "judge.jsonl"),
-			timeoutMs,
+	if (enabled.exitCode === 0 && disabled.exitCode === 0) {
+		try {
+			console.log(`[live-eval] ${task.id}/attempt-${attempt}: judge run`);
+			const judged = await runJudge(
+				task,
+				enabled,
+				disabled,
+				attemptDir,
+				join(attemptDir, "judge.jsonl"),
+				timeouts.judgeMs,
+			);
+			judge = judged.run;
+			judgement = judged.judgement;
+		} catch (error) {
+			judge = {
+				mode: "judge",
+				exitCode: 1,
+				durationMs: 0,
+				delegateCalls: 0,
+				delegateSucceeded: 0,
+				delegateFailed: 0,
+				delegateEfforts: [],
+				parentUsage: emptyUsage(),
+				childUsage: emptyUsage(),
+				finalText: "",
+				stderr: error instanceof Error ? error.message : String(error),
+				jsonParseErrors: 0,
+				readOnlyChangedFiles: [],
+				artifact: join(attemptDir, "judge.jsonl"),
+			};
+		}
+	} else {
+		console.log(
+			`[live-eval] ${task.id}/attempt-${attempt}: skipping judge after agent failure`,
 		);
-		judge = judged.run;
-		judgement = judged.judgement;
-	} catch (error) {
-		judge = {
-			mode: "judge",
-			exitCode: 1,
-			durationMs: 0,
-			delegateCalls: 0,
-			delegateSucceeded: 0,
-			delegateFailed: 0,
-			delegateEfforts: [],
-			parentUsage: emptyUsage(),
-			childUsage: emptyUsage(),
-			finalText: "",
-			stderr: error instanceof Error ? error.message : String(error),
-			jsonParseErrors: 0,
-			readOnlyChangedFiles: [],
-			artifact: join(attemptDir, "judge.jsonl"),
-		};
 	}
 	const withoutFailures = {
 		attempt,
@@ -828,14 +861,23 @@ async function runCaseAttempt(
 	};
 }
 
-function requiredNumberEnv(name: string): number {
-	const raw = process.env[name];
-	if (!raw) throw new Error(`${name} is required for live evals`);
+function parsePositiveNumberEnv(name: string, raw: string): number {
 	const value = Number(raw);
 	if (!Number.isFinite(value) || value <= 0) {
 		throw new Error(`${name} must be a positive number`);
 	}
 	return value;
+}
+
+function requiredNumberEnv(name: string): number {
+	const raw = process.env[name];
+	if (!raw) throw new Error(`${name} is required for live evals`);
+	return parsePositiveNumberEnv(name, raw);
+}
+
+function optionalNumberEnv(name: string, fallback: number): number {
+	const raw = process.env[name];
+	return raw ? parsePositiveNumberEnv(name, raw) : fallback;
 }
 
 function selectedTasks(raw?: string): FixtureTask[] {
@@ -966,9 +1008,24 @@ describe("live eval scoring", () => {
 	() => {
 		test("runs the baseline KPI suite", async () => {
 			const timeoutMs = requiredNumberEnv("PI_DELEGATE_EVAL_TIMEOUT_MS");
+			const timeouts: EvalTimeouts = {
+				agentMs: optionalNumberEnv(
+					"PI_DELEGATE_EVAL_AGENT_TIMEOUT_MS",
+					timeoutMs,
+				),
+				judgeMs: optionalNumberEnv(
+					"PI_DELEGATE_EVAL_JUDGE_TIMEOUT_MS",
+					Math.min(timeoutMs, 120000),
+				),
+				postCheckMs: optionalNumberEnv(
+					"PI_DELEGATE_EVAL_POSTCHECK_TIMEOUT_MS",
+					Math.min(timeoutMs, 60000),
+				),
+			};
 			const maxTokens = requiredNumberEnv("PI_DELEGATE_EVAL_MAX_TOKENS");
 			const maxCost = requiredNumberEnv("PI_DELEGATE_EVAL_MAX_COST_USD");
 			const { PI_DELEGATE_EVAL_ARTIFACT_DIR } = process.env;
+			const model = evalModel();
 			const judgeModel = evalJudgeModel();
 			const tasks = selectedTasks();
 			const artifactDir =
@@ -981,15 +1038,21 @@ describe("live eval scoring", () => {
 			const budgetUsage = emptyUsage();
 
 			console.log(
-				`[live-eval] running ${tasks.length} task(s); artifacts: ${artifactDir}`,
+				`[live-eval] running ${tasks.length} task(s); model=${model}; judge=${judgeModel}; artifacts: ${artifactDir}`,
 			);
 			for (const task of tasks) {
-				let attempt = await runCaseAttempt(task, 1, artifactDir, timeoutMs);
+				let attempt = await runCaseAttempt(
+					task,
+					1,
+					artifactDir,
+					timeouts,
+					model,
+				);
 				if (attempt.hardFailures.length > 0) {
 					console.log(
 						`[live-eval] ${task.id}: retrying after hard failure(s): ${attempt.hardFailures.join("; ")}`,
 					);
-					attempt = await runCaseAttempt(task, 2, artifactDir, timeoutMs);
+					attempt = await runCaseAttempt(task, 2, artifactDir, timeouts, model);
 				}
 				console.log(
 					`[live-eval] ${task.id}: decision=${attempt.decisionScore} effort=${attempt.effortScore} enabled=${attempt.enabled.durationMs}ms disabled=${attempt.disabled.durationMs}ms judge=${attempt.judge?.durationMs ?? 0}ms`,
@@ -1037,8 +1100,10 @@ describe("live eval scoring", () => {
 				config: {
 					tasks: tasks.map((task) => task.id),
 					timeoutMs,
+					timeouts,
 					maxTokens,
 					maxCost,
+					model,
 					judgeModel,
 				},
 				kpis: {

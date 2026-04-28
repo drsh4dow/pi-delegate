@@ -17,7 +17,7 @@
 		"check": "biome check .",
 		"check:fix": "biome check --write .",
 		"test": "bun test",
-		"test:live": "PI_DELEGATE_LIVE=1 bun test --timeout 7200000 live-eval.test.ts",
+		"test:live": "PI_DELEGATE_LIVE=1 bun test --timeout 3600000 live-eval.test.ts",
 		"typecheck": "bunx tsc --noEmit"
 	},
 	"keywords": [
