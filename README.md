@@ -98,7 +98,7 @@ PI_OFFLINE=1 bunx --bun pi --no-extensions -e . --list-models >/tmp/pi-delegate-
 
 ```bash
 PI_DELEGATE_LIVE=1 \
-PI_DELEGATE_EVAL_JUDGE_MODEL=<provider/model> \
+PI_DELEGATE_EVAL_JUDGE_MODEL=openai/gpt-5.5 \
 PI_DELEGATE_EVAL_TIMEOUT_MS=1800000 \
 PI_DELEGATE_EVAL_MAX_TOKENS=1500000 \
 PI_DELEGATE_EVAL_MAX_COST_USD=30 \
@@ -106,6 +106,6 @@ PI_DELEGATE_EVAL_ARTIFACT_DIR=artifacts/live-eval \
 bun run test:live
 ```
 
-Use `PI_DELEGATE_EVAL_TASKS=id1,id2` to run a subset while tuning the policy.
+`PI_DELEGATE_EVAL_JUDGE_MODEL` defaults to `openai/gpt-5.5`. Use `PI_DELEGATE_EVAL_TASKS=id1,id2` to run a subset while tuning the policy.
 
 The suite records sanitized JSONL traces plus `summary.json`, including delegate decision and effort-selection KPIs. During baseline it hard-fails only crashes, budget overruns, read-only writes, and forbidden delegate calls; KPI scores are reported for threshold calibration.

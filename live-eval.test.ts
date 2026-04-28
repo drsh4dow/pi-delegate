@@ -14,6 +14,12 @@ import { fileURLToPath } from "node:url";
 const repoRoot = dirname(fileURLToPath(import.meta.url));
 const { PI_DELEGATE_LIVE } = process.env;
 const liveEnabled = PI_DELEGATE_LIVE === "1";
+const defaultJudgeModel = "openai/gpt-5.5";
+
+function evalJudgeModel() {
+	const { PI_DELEGATE_EVAL_JUDGE_MODEL } = process.env;
+	return PI_DELEGATE_EVAL_JUDGE_MODEL?.trim() || defaultJudgeModel;
+}
 
 type DelegateExpectation = "required" | "allowed" | "forbidden";
 type DelegateEffort = "fast" | "balanced" | "smart";
@@ -559,10 +565,7 @@ async function runJudge(
 	artifact: string,
 	timeoutMs: number,
 ) {
-	const { PI_DELEGATE_EVAL_JUDGE_MODEL: judgeModel } = process.env;
-	if (!judgeModel) {
-		throw new Error("PI_DELEGATE_EVAL_JUDGE_MODEL is required for live evals");
-	}
+	const judgeModel = evalJudgeModel();
 	const prompt = `You are an evaluator for a coding-agent live integration test. Return only valid JSON.\n\nTask id: ${task.id}\nDelegate expectation: ${task.expectDelegate}\nUser prompt:\n${task.prompt}\n\nExpected outcome:\n${task.expectedOutcome}\n\nEnabled run final answer:\n${enabled.finalText}\n\nDisabled-control final answer:\n${disabled.finalText}\n\nEnabled deterministic post-check: ${JSON.stringify(enabled.postCheck ?? null)}\nDisabled deterministic post-check: ${JSON.stringify(disabled.postCheck ?? null)}\n\nScore each side from 0 to 5 on correctness, evidence, coverage, and usefulness. Use the expected outcome and deterministic checks. Respond exactly as:\n{"enabled":{"scores":{"correctness":0,"evidence":0,"coverage":0,"usefulness":0},"rationale":{"correctness":"...","evidence":"...","coverage":"...","usefulness":"..."}},"disabled":{"scores":{"correctness":0,"evidence":0,"coverage":0,"usefulness":0},"rationale":{"correctness":"...","evidence":"...","coverage":"...","usefulness":"..."}}}`;
 	const run = await runCommand(
 		[
@@ -846,13 +849,8 @@ describe("live eval scoring", () => {
 			const timeoutMs = requiredNumberEnv("PI_DELEGATE_EVAL_TIMEOUT_MS");
 			const maxTokens = requiredNumberEnv("PI_DELEGATE_EVAL_MAX_TOKENS");
 			const maxCost = requiredNumberEnv("PI_DELEGATE_EVAL_MAX_COST_USD");
-			const { PI_DELEGATE_EVAL_ARTIFACT_DIR, PI_DELEGATE_EVAL_JUDGE_MODEL } =
-				process.env;
-			if (!PI_DELEGATE_EVAL_JUDGE_MODEL) {
-				throw new Error(
-					"PI_DELEGATE_EVAL_JUDGE_MODEL is required for live evals",
-				);
-			}
+			const { PI_DELEGATE_EVAL_ARTIFACT_DIR } = process.env;
+			const judgeModel = evalJudgeModel();
 			const tasks = selectedTasks();
 			const artifactDir =
 				PI_DELEGATE_EVAL_ARTIFACT_DIR ??
@@ -913,7 +911,7 @@ describe("live eval scoring", () => {
 					timeoutMs,
 					maxTokens,
 					maxCost,
-					judgeModel: PI_DELEGATE_EVAL_JUDGE_MODEL,
+					judgeModel,
 				},
 				kpis: {
 					decisionScore,
