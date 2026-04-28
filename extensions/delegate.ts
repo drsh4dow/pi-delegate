@@ -68,7 +68,7 @@ const DelegateParams = Type.Object({
 	effort: Type.Optional(
 		StringEnum(["fast", "balanced", "smart"], {
 			description:
-				"Speed vs depth for the child agent. Choose explicitly: fast=scouting/recon/repo mapping/docs/API lookup, smart=review/critique/debugging/ambiguous or high-risk design, balanced=ordinary focused implementation or moderate investigation. Omitted effort falls back to balanced for compatibility.",
+				"Speed vs depth for the child agent. Choose explicitly: fast=scouting/recon/repo mapping/docs/API lookup, smart=review/critique/debugging/ambiguous or high-risk design, balanced=ordinary focused implementation or moderate investigation. Omitted effort falls back to balanced.",
 			default: "balanced",
 		}),
 	),

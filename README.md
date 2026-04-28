@@ -38,7 +38,7 @@ The main agent never sees the child’s intermediate exploration.
 Parameters:
 
 - `task`: the task for the child agent
-- `effort`: optional `fast | balanced | smart` — default `balanced` for compatibility, but callers should choose explicitly
+- `effort`: optional `fast | balanced | smart` — default `balanced`, but callers should choose explicitly
 
 Effort maps to one model with different thinking levels:
 
