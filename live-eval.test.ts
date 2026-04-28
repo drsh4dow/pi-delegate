@@ -425,6 +425,78 @@ function changedFiles(before: Map<string, string>, after: Map<string, string>) {
 	return [...changed].sort();
 }
 
+const timeoutExitCode = 124;
+const streamDrainMs = 500;
+
+function sleep(ms: number) {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function killProcessGroup(proc: Bun.Subprocess) {
+	try {
+		proc.unref();
+	} catch {
+		// The process may already be gone.
+	}
+	try {
+		if (process.platform !== "win32") {
+			process.kill(-proc.pid, "SIGKILL");
+			return;
+		}
+	} catch {
+		// Fall back to killing the direct child below.
+	}
+	try {
+		proc.kill("SIGKILL");
+	} catch {
+		// The process may already be gone.
+	}
+}
+
+function collectStream(stream: ReadableStream<Uint8Array>) {
+	let text = "";
+	const decoder = new TextDecoder();
+	const reader = stream.getReader();
+	const done = (async () => {
+		try {
+			while (true) {
+				const chunk = await reader.read();
+				if (chunk.done) break;
+				text += decoder.decode(chunk.value, { stream: true });
+			}
+		} catch {
+			// Cancellation is expected when a leaked descendant keeps a pipe open.
+		} finally {
+			text += decoder.decode();
+		}
+	})();
+	return {
+		done,
+		text: () => text,
+		cancel: async () => {
+			try {
+				await reader.cancel();
+			} catch {
+				// Already closed.
+			}
+		},
+	};
+}
+
+async function drainStreams(
+	proc: Bun.Subprocess,
+	stdout: ReturnType<typeof collectStream>,
+	stderr: ReturnType<typeof collectStream>,
+) {
+	const drained = await Promise.race([
+		Promise.all([stdout.done, stderr.done]).then(() => true),
+		sleep(streamDrainMs).then(() => false),
+	]);
+	if (drained) return;
+	killProcessGroup(proc);
+	await Promise.all([stdout.cancel(), stderr.cancel()]);
+}
+
 async function runCommand(
 	command: string[],
 	cwd: string,
@@ -438,20 +510,45 @@ async function runCommand(
 	const startedAt = Date.now();
 	const proc = Bun.spawn(command, {
 		cwd,
+		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
+		detached: process.platform !== "win32",
 		env: process.env,
 	});
-	const timeout = setTimeout(() => proc.kill(), timeoutMs);
+	const stdout = collectStream(proc.stdout);
+	const stderr = collectStream(proc.stderr);
+	let timeout: ReturnType<typeof setTimeout> | undefined;
 	try {
-		const [stdout, stderr, exitCode] = await Promise.all([
-			new Response(proc.stdout).text(),
-			new Response(proc.stderr).text(),
+		const exit = await Promise.race([
 			proc.exited,
+			new Promise<"timeout">((resolve) => {
+				timeout = setTimeout(() => {
+					killProcessGroup(proc);
+					resolve("timeout");
+				}, timeoutMs);
+			}),
 		]);
-		return { exitCode, stdout, stderr, durationMs: Date.now() - startedAt };
+		if (exit === "timeout") {
+			await Promise.race([proc.exited, sleep(streamDrainMs)]);
+			await Promise.all([stdout.cancel(), stderr.cancel()]);
+			const message = `Command timed out after ${timeoutMs}ms`;
+			return {
+				exitCode: timeoutExitCode,
+				stdout: stdout.text(),
+				stderr: stderr.text() ? `${stderr.text()}\n${message}` : message,
+				durationMs: Date.now() - startedAt,
+			};
+		}
+		await drainStreams(proc, stdout, stderr);
+		return {
+			exitCode: exit,
+			stdout: stdout.text(),
+			stderr: stderr.text(),
+			durationMs: Date.now() - startedAt,
+		};
 	} finally {
-		clearTimeout(timeout);
+		if (timeout) clearTimeout(timeout);
 	}
 }
 
@@ -675,11 +772,14 @@ async function runCaseAttempt(
 ): Promise<CaseAttempt> {
 	const attemptDir = join(artifactDir, task.id, `attempt-${attempt}`);
 	await mkdir(attemptDir, { recursive: true });
+	console.log(`[live-eval] ${task.id}/attempt-${attempt}: enabled run`);
 	const enabled = await runAgentSide("enabled", task, attemptDir, timeoutMs);
+	console.log(`[live-eval] ${task.id}/attempt-${attempt}: disabled run`);
 	const disabled = await runAgentSide("disabled", task, attemptDir, timeoutMs);
 	let judge: RunSummary | undefined;
 	let judgement: JudgeResult | undefined;
 	try {
+		console.log(`[live-eval] ${task.id}/attempt-${attempt}: judge run`);
 		const judged = await runJudge(
 			task,
 			enabled,
@@ -783,6 +883,25 @@ describe("live eval scoring", () => {
 		).toEqual(["broad-repo-scan", "trivial-answer"]);
 	});
 
+	test("does not wait forever when a descendant keeps stdout open", async () => {
+		if (process.platform === "win32") return;
+		const run = await runCommand(
+			["bash", "-lc", "printf ready; (sleep 30) & exit 0"],
+			repoRoot,
+			5000,
+		);
+		expect(run.exitCode).toBe(0);
+		expect(run.stdout).toContain("ready");
+		expect(run.durationMs).toBeLessThan(3000);
+	});
+
+	test("kills a command that exceeds its timeout", async () => {
+		const run = await runCommand(["bash", "-lc", "sleep 30"], repoRoot, 200);
+		expect(run.exitCode).toBe(timeoutExitCode);
+		expect(run.stderr).toContain("Command timed out after 200ms");
+		expect(run.durationMs).toBeLessThan(3000);
+	});
+
 	test("parses Pi JSONL usage and delegate child usage", async () => {
 		const stdout = [
 			JSON.stringify({
@@ -861,11 +980,20 @@ describe("live eval scoring", () => {
 			const hardFailures: string[] = [];
 			const budgetUsage = emptyUsage();
 
+			console.log(
+				`[live-eval] running ${tasks.length} task(s); artifacts: ${artifactDir}`,
+			);
 			for (const task of tasks) {
 				let attempt = await runCaseAttempt(task, 1, artifactDir, timeoutMs);
 				if (attempt.hardFailures.length > 0) {
+					console.log(
+						`[live-eval] ${task.id}: retrying after hard failure(s): ${attempt.hardFailures.join("; ")}`,
+					);
 					attempt = await runCaseAttempt(task, 2, artifactDir, timeoutMs);
 				}
+				console.log(
+					`[live-eval] ${task.id}: decision=${attempt.decisionScore} effort=${attempt.effortScore} enabled=${attempt.enabled.durationMs}ms disabled=${attempt.disabled.durationMs}ms judge=${attempt.judge?.durationMs ?? 0}ms`,
+				);
 				attempts.push(attempt);
 				for (const run of [
 					attempt.enabled,

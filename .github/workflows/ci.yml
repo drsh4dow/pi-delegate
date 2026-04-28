@@ -42,6 +42,7 @@ jobs:
   live-eval:
     name: Live delegate KPI eval
     runs-on: ubuntu-latest
+    timeout-minutes: 150
 
     steps:
       - name: Checkout

@@ -446,22 +446,18 @@ export default function delegateExtension(pi: ExtensionAPI) {
 
 				const timeoutPromise = new Promise<never>((_, reject) => {
 					timer = setTimeout(() => {
-						void (async () => {
-							timedOut = true;
-							await abortChild();
-							reject(new Error("Timed out after 15 minutes"));
-						})();
+						timedOut = true;
+						void abortChild();
+						reject(new Error("Timed out after 15 minutes"));
 					}, TIMEOUT_MS);
 				});
 
 				const abortPromise = new Promise<never>((_, reject) => {
 					if (!signal) return;
 					const onAbort = () => {
-						void (async () => {
-							aborted = true;
-							await abortChild();
-							reject(new Error("Delegation aborted"));
-						})();
+						aborted = true;
+						void abortChild();
+						reject(new Error("Delegation aborted"));
 					};
 					removeAbortListener = () =>
 						signal.removeEventListener("abort", onAbort);
