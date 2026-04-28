@@ -120,6 +120,7 @@ describe("delegate extension", () => {
 		expect(joinedGuidelines).toContain("read-only");
 		expect(joinedGuidelines).toContain("obvious typo/format/text-only edits");
 		expect(joinedGuidelines).toContain("behavior bugs are not trivial edits");
+		expect(joinedGuidelines).toContain("handoff-ready output");
 		expect(joinedGuidelines).toContain("choose effort explicitly");
 		expect(joinedGuidelines).toContain("fast for scouting");
 		expect(joinedGuidelines).toContain("docs/API lookup");
@@ -133,6 +134,7 @@ describe("delegate extension", () => {
 		);
 		expect(parameters.properties.task?.description).toContain("read-only");
 		expect(parameters.properties.task?.description).toContain("verification");
+		expect(parameters.properties.task?.description).toContain("handoff-ready");
 		expect(parameters.properties.effort?.description).toContain("scouting");
 		expect(parameters.properties.effort?.description).toContain(
 			"docs/API lookup",
@@ -174,6 +176,10 @@ describe("delegate extension", () => {
 		expect(source).toContain("If the task says read-only, do not modify files");
 		expect(source).toContain("Prefer evidence over assertion");
 		expect(source).toContain("Final response format:");
+		expect(source).toContain("Task: one-line restatement");
+		expect(source).toContain("Evidence: concise bullets");
+		expect(source).toContain("Use the shortest useful report");
+		expect(source).toContain("Research/docs tasks");
 		expect(source).toContain("Verification: commands run and outcomes");
 	});
 
@@ -290,6 +296,7 @@ describe("delegate extension", () => {
 		const tool = getTool();
 		const details: DelegateDetails = {
 			success: false,
+			assignedTask: "Inspect this repo.\nDo not modify files.",
 			effort: "balanced",
 			requestedModel: "openai-codex/gpt-5.5",
 			model: "openai-codex/gpt-5.5",
@@ -323,13 +330,81 @@ describe("delegate extension", () => {
 
 		expect(text).toContain("running • gpt-5.5 • 123ms • 2 tools");
 		expect(text).toContain("1 failed");
+		expect(text).toContain("assigned task");
+		expect(text).toContain("Inspect this repo.");
+		expect(text).toContain("Do not modify files.");
 		expect(text).not.toContain("failed •");
+	});
+
+	test("renders assigned tasks as a bounded collapsed card and full expanded card", () => {
+		const tool = getTool();
+		const details: DelegateDetails = {
+			success: false,
+			assignedTask: [
+				"Line one objective",
+				"Line two context",
+				"Line three constraints",
+				"Line four verification",
+				"Line five hidden",
+				"Line six hidden",
+			].join("\n"),
+			effort: "smart",
+			requestedModel: "openai-codex/gpt-5.5",
+			model: "openai-codex/gpt-5.5",
+			thinking: "high",
+			durationMs: 5000,
+			toolCalls: 0,
+			failedToolCalls: 0,
+			childUsage: {
+				turns: 0,
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: 0,
+			},
+			timedOut: false,
+			aborted: false,
+		};
+
+		const collapsed = renderText(
+			tool.renderResult?.(
+				{ content: [], details },
+				{ expanded: false, isPartial: true },
+				fakeTheme(),
+				{ isError: false } as Parameters<
+					NonNullable<DelegateTool["renderResult"]>
+				>[3],
+			) ?? { render: () => [] },
+		);
+		const expanded = renderText(
+			tool.renderResult?.(
+				{ content: [], details },
+				{ expanded: true, isPartial: true },
+				fakeTheme(),
+				{ isError: false } as Parameters<
+					NonNullable<DelegateTool["renderResult"]>
+				>[3],
+			) ?? { render: () => [] },
+		);
+
+		expect(collapsed).toContain("assigned task");
+		expect(collapsed).toContain("Line one objective");
+		expect(collapsed).toContain("Line four verification");
+		expect(collapsed).toContain("… 2 more lines hidden");
+		expect(collapsed).toContain("expand assigned task");
+		expect(collapsed).not.toContain("Line five hidden");
+		expect(expanded).toContain("assigned task");
+		expect(expanded).toContain("Line six hidden");
+		expect(expanded).toContain("collapse assigned task");
 	});
 
 	test("renders completed delegate results with a small collapsed report preview", () => {
 		const tool = getTool();
 		const details: DelegateDetails = {
 			success: true,
+			assignedTask: "Inspect this repo.\nDo not modify files.",
 			effort: "balanced",
 			requestedModel: "openai-codex/gpt-5.5",
 			model: "openai-codex/gpt-5.5",
@@ -366,7 +441,9 @@ describe("delegate extension", () => {
 			) ?? { render: () => [] },
 		);
 
-		expect(text.split("\n").length).toBeLessThanOrEqual(5);
+		expect(text).toContain("assigned task");
+		expect(text).toContain("Inspect this repo.");
+		expect(text).toContain("Do not modify files.");
 		expect(text).toContain("done • gpt-5.5 • 1.2s • 3 tools");
 		expect(text).toContain("↑1.5k ↓750 $0.0330");
 		expect(text).toContain("child report preview");
@@ -380,6 +457,7 @@ describe("delegate extension", () => {
 		const tool = getTool();
 		const details: DelegateDetails = {
 			success: true,
+			assignedTask: "Inspect this repo.\nDo not modify files.",
 			effort: "fast",
 			requestedModel: "openai-codex/gpt-5.5",
 			model: "openai-codex/gpt-5.5",
@@ -431,13 +509,14 @@ describe("delegate extension", () => {
 		expect(text).toContain("preview truncated");
 		expect(text).toContain("expand child report");
 		expect(text).not.toContain("line five should not render");
-		expect(text.split("\n").length).toBeLessThanOrEqual(7);
+		expect(text.split("\n").length).toBeLessThanOrEqual(12);
 	});
 
 	test("renders empty completed delegate results without a fake preview", () => {
 		const tool = getTool();
 		const details: DelegateDetails = {
 			success: true,
+			assignedTask: "Inspect this repo.\nDo not modify files.",
 			effort: "balanced",
 			requestedModel: "openai-codex/gpt-5.5",
 			model: "openai-codex/gpt-5.5",
@@ -478,6 +557,7 @@ describe("delegate extension", () => {
 		const tool = getTool();
 		const details: DelegateDetails = {
 			success: true,
+			assignedTask: "Inspect this repo.\nDo not modify files.",
 			effort: "smart",
 			requestedModel: "openai-codex/gpt-5.5",
 			model: "openai-codex/gpt-5.5",
@@ -525,11 +605,14 @@ describe("delegate extension", () => {
 		expect(text).toContain("output truncated");
 		expect(text).toContain("/tmp/full-output.txt");
 		expect(text).toContain("collapse child report");
+		expect(text).toContain("assigned task");
+		expect(text).toContain("Inspect this repo.");
+		expect(text).toContain("Do not modify files.");
 		expect(text).toContain("Child report");
 		expect(text).toContain("Full expanded report.");
 	});
 
-	test("renders concise delegate call previews", () => {
+	test("renders delegate call headers without inline task truncation", () => {
 		const tool = getTool();
 		const text = renderText(
 			tool.renderCall?.(
@@ -542,38 +625,10 @@ describe("delegate extension", () => {
 			) ?? { render: () => [] },
 		);
 
-		expect(text).toStartWith(
-			"delegate • smart • task: Inspect this very noisy",
-		);
-		expect(text).toContain("…");
-		expect(text).not.toContain("Do not show this second line");
-		expect(text.length).toBeLessThan(140);
-	});
-
-	test("renders more useful delegate call previews from objective lines", () => {
-		const tool = getTool();
-		const text = renderText(
-			tool.renderCall?.(
-				{
-					effort: "balanced",
-					task: [
-						"Read-only reconnaissance in /workspace/project for a broad task. Objective: identify compact delegate output UI improvements and tests.",
-						"Do not show this fallback line.",
-					].join("\n"),
-				},
-				fakeTheme(),
-				{ cwd: "/workspace/project" } as Parameters<
-					NonNullable<DelegateTool["renderCall"]>
-				>[2],
-			) ?? { render: () => [] },
-		);
-
-		expect(text).toContain(
-			"task: identify compact delegate output UI improvements and tests.",
-		);
-		expect(text).not.toContain("Read-only reconnaissance");
-		expect(text).not.toContain("Do not show this fallback line");
-		expect(text).not.toContain("/workspace/project");
+		expect(text.trimEnd()).toBe("delegate • smart");
+		expect(text).not.toContain("task:");
+		expect(text).not.toContain("Inspect this very noisy");
+		expect(text).not.toContain("…");
 	});
 
 	test("truncates delegated final output and stores the full text", async () => {
@@ -658,20 +713,24 @@ describe("delegate extension", () => {
 							message: {
 								role: "assistant",
 								content: [{ type: "text", text: "child final report" }],
-								usage: {
-									input: 10,
-									output: 5,
-									cacheRead: 2,
-									cacheWrite: 1,
-									totalTokens: 18,
-									cost: {
-										input: 0.01,
-										output: 0.02,
-										cacheRead: 0.001,
-										cacheWrite: 0.002,
-										total: 0.033,
-									},
-								},
+								...(text === "no usage task"
+									? {}
+									: {
+											usage: {
+												input: 10,
+												output: 5,
+												cacheRead: 2,
+												cacheWrite: 1,
+												totalTokens: 18,
+												cost: {
+													input: 0.01,
+													output: 0.02,
+													cacheRead: 0.001,
+													cacheWrite: 0.002,
+													total: 0.033,
+												},
+											},
+										}),
 							},
 						});
 					},
@@ -722,11 +781,13 @@ describe("delegate extension", () => {
 		expect(activeTools).toEqual(["read", "write"]);
 		expect(updates.at(0)).toMatchObject({
 			success: false,
+			assignedTask: "inspect package",
 			effort: "fast",
 			toolCalls: 0,
 		});
 		expect(updates.at(-1)).toMatchObject({
 			success: false,
+			assignedTask: "inspect package",
 			effort: "fast",
 			toolCalls: 1,
 			failedToolCalls: 0,
@@ -736,6 +797,7 @@ describe("delegate extension", () => {
 		]);
 		expect(result.details).toMatchObject({
 			success: true,
+			assignedTask: "inspect package",
 			effort: "fast",
 			toolCalls: 1,
 			failedToolCalls: 0,
@@ -752,6 +814,26 @@ describe("delegate extension", () => {
 			},
 		});
 
+		const noUsageResult = await tool.execute(
+			"tool-call",
+			{ task: "no usage task", effort: "fast" },
+			undefined,
+			undefined,
+			context,
+		);
+		expect(noUsageResult.details).toMatchObject({
+			assignedTask: "no usage task",
+			childUsage: {
+				turns: 1,
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: 0,
+			},
+		});
+
 		await expect(
 			tool.execute(
 				"tool-call",
@@ -761,6 +843,6 @@ describe("delegate extension", () => {
 				context,
 			),
 		).rejects.toThrow("Delegated task failed: child exploded (gpt-5.5 •");
-		expect(disposeCount).toBe(2);
+		expect(disposeCount).toBe(3);
 	});
 });

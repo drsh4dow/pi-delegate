@@ -20,18 +20,18 @@ import {
 	type TruncationResult,
 	truncateHead,
 } from "@mariozechner/pi-coding-agent";
-import { Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
+import { Box, Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
 
 const TOOL_NAME = "delegate";
 const TIMEOUT_MS = 15 * 60 * 1000;
 const COLLAPSED_PREVIEW_LINES = 4;
 const COLLAPSED_PREVIEW_CHARS = 360;
-const TASK_PREVIEW_CHARS = 84;
 const REQUESTED_MODEL = "openai-codex/gpt-5.5";
 export const CHILD_EXTENSION_PATHS_ENV = "PI_CHILD_EXTENSION_PATHS";
 const DELEGATE_DECISION_PROMPT = `Delegation decision policy:
 - If delegate is available and the user asks for broad repo scanning, noisy investigation, current library/API research, independent code review, plan critique, or non-trivial code changes with verification, call delegate once early before doing direct exploration or edits.
 - Choose effort explicitly: fast for scouting/recon/repo mapping/docs/API lookup, smart for review/critique/debugging/ambiguous or high-risk design, balanced for ordinary focused implementation or moderate investigation.
+- Ask for handoff-ready output: concise result, evidence, inspected/changed files, verification, and caveats/next steps only when useful.
 - Do not delegate trivial fact lookups, obvious typo/format/text-only edits, or work the parent can finish with one or two cheap local tool calls.
 - For read-only work, pass read-only constraints to delegate. For write-capable work, delegate only when the user's request allows edits.`;
 
@@ -46,12 +46,21 @@ Your contract:
 - Keep intermediate exploration out of the final answer.
 
 Final response format:
+- Task: one-line restatement of the assigned task.
 - Result: concise answer or summary of completed work.
+- Evidence: concise bullets with files, symbols, commands, outcomes, or source URLs when they support the result.
 - Files inspected/changed: relevant paths only.
 - Verification: commands run and outcomes, or "not run" with reason.
+- Parent handoff: only if the parent must decide, continue, or handle risk.
 - Caveats/next steps: only if important.
 
-Return only the final report.`;
+Task-specific guidance:
+- Scout/recon tasks: report map, inspected files, important risks, and where to look next.
+- Research/docs tasks: include current facts and concise citations/URLs for online or documentation sources.
+- Review tasks: prioritize findings with severity, evidence, and concrete remediation direction.
+- Implementation tasks: emphasize changed behavior, changed files, and validation instead of implementation narration.
+
+Use the shortest useful report. Prefer 10-25 lines; up to about 50 lines is fine when the task genuinely needs richer research/review detail. Return only the final report.`;
 
 export const DEFAULT_DELEGATE_MODEL = {
 	provider: "openai-codex",
@@ -66,7 +75,7 @@ export const DELEGATION_TOOL_DENYLIST = [
 const DelegateParams = Type.Object({
 	task: Type.String({
 		description:
-			"Self-contained task for the delegated child agent. Include objective, relevant context/files, constraints, whether edits are allowed or read-only, expected output, and verification requirements.",
+			"Self-contained task for the delegated child agent. Include objective, relevant context/files, constraints, whether edits are allowed or read-only, expected output, verification requirements, and a request for handoff-ready output.",
 	}),
 	effort: Type.Optional(
 		StringEnum(["fast", "balanced", "smart"], {
@@ -93,6 +102,7 @@ export interface DelegateUsageStats {
 
 export interface DelegateDetails {
 	success: boolean;
+	assignedTask: string;
 	effort: DelegateEffort;
 	requestedModel: string;
 	model?: string;
@@ -349,26 +359,6 @@ function formatCollapsedPreview(text: string): {
 	return { text: preview, truncated, hiddenLines };
 }
 
-function formatDelegateTaskPreview(
-	task: string | undefined,
-	cwd: string,
-): string {
-	const lines = (task ?? "")
-		.split(/\r?\n/)
-		.map((line) => line.trim())
-		.filter(Boolean);
-	const objective = lines
-		.map((line) => line.match(/\b(objective|goal):\s*(.+)/i)?.[2]?.trim())
-		.find((line) => line && line.length > 0);
-	const source = objective ?? lines[0] ?? "";
-	let preview = source.replace(/\s+/g, " ").trim();
-	if (cwd) preview = preview.replaceAll(cwd, ".");
-	if (preview.length > TASK_PREVIEW_CHARS) {
-		preview = `${preview.slice(0, TASK_PREVIEW_CHARS - 1).trimEnd()}…`;
-	}
-	return preview;
-}
-
 export default function delegateExtension(pi: ExtensionAPI) {
 	pi.on("before_agent_start", (event) => {
 		if (!event.systemPromptOptions.selectedTools?.includes(TOOL_NAME)) return;
@@ -388,7 +378,7 @@ export default function delegateExtension(pi: ExtensionAPI) {
 			"Delegate policy: for broad repo scanning, noisy investigation, current library/API research, independent code review, plan critique, non-trivial code modification, or focused implementation with verification, call delegate exactly once early unless the user forbids delegation; this policy applies even when the repo or task looks small.",
 			"For prompts asking to research, investigate, review, critique, map, or fix failing behavior with tests, call delegate before doing your own read/find/bash/web research; do not implement these tasks directly unless they are explicitly a trivial typo/single-line edit.",
 			"Use delegate as the required way to invoke a subagent or delegated worker; do not manually simulate a subagent in chat.",
-			"When calling delegate, include the objective, relevant context/files, constraints, whether edits are allowed, expected output, verification requirements, and an explicit effort.",
+			"When calling delegate, include the objective, relevant context/files, constraints, whether edits are allowed, expected output, verification requirements, a request for handoff-ready output, and an explicit effort.",
 			"When calling delegate, choose effort explicitly: fast for scouting/recon/repo mapping/docs/API lookup; smart for review/critique/debugging/ambiguous or high-risk design; balanced for ordinary focused implementation or moderate investigation.",
 			"Use delegate for write-capable tasks only when user intent allows edits; mark investigation, research, review, and critique tasks read-only.",
 			"Do not use delegate for trivial fact lookups, obvious typo/format/text-only edits, or questions the parent can answer with one or two cheap local tool calls; failing tests and behavior bugs are not trivial edits.",
@@ -415,6 +405,7 @@ export default function delegateExtension(pi: ExtensionAPI) {
 
 			const currentDetails = (): DelegateDetails => ({
 				success: false,
+				assignedTask: params.task,
 				effort,
 				requestedModel: REQUESTED_MODEL,
 				model: modelName(child?.model ?? modelChoice.model),
@@ -479,14 +470,23 @@ export default function delegateExtension(pi: ExtensionAPI) {
 					const text = extractAssistantText(event.message);
 					if (text) lastAssistantText = text;
 					if (event.message.role !== "assistant") return;
-					const usage = event.message.usage;
+					const usage = event.message.usage as
+						| {
+								input?: number;
+								output?: number;
+								cacheRead?: number;
+								cacheWrite?: number;
+								totalTokens?: number;
+								cost?: { total?: number };
+						  }
+						| undefined;
 					childUsage.turns++;
-					childUsage.input += usage.input;
-					childUsage.output += usage.output;
-					childUsage.cacheRead += usage.cacheRead;
-					childUsage.cacheWrite += usage.cacheWrite;
-					childUsage.totalTokens += usage.totalTokens;
-					childUsage.cost += usage.cost.total;
+					childUsage.input += usage?.input ?? 0;
+					childUsage.output += usage?.output ?? 0;
+					childUsage.cacheRead += usage?.cacheRead ?? 0;
+					childUsage.cacheWrite += usage?.cacheWrite ?? 0;
+					childUsage.totalTokens += usage?.totalTokens ?? 0;
+					childUsage.cost += usage?.cost?.total ?? 0;
 				});
 
 				const timeoutPromise = new Promise<never>((_, reject) => {
@@ -539,6 +539,7 @@ export default function delegateExtension(pi: ExtensionAPI) {
 			);
 			const details: DelegateDetails = {
 				success: true,
+				assignedTask: params.task,
 				effort,
 				requestedModel: REQUESTED_MODEL,
 				model: modelName(child?.model ?? modelChoice.model),
@@ -564,16 +565,12 @@ export default function delegateExtension(pi: ExtensionAPI) {
 				details,
 			};
 		},
-		renderCall(args, theme, context) {
+		renderCall(args, theme, _context) {
 			const effort = args.effort ?? "balanced";
-			const preview = formatDelegateTaskPreview(args.task, context.cwd);
 			return new Text(
 				theme.fg("toolTitle", theme.bold(TOOL_NAME)) +
 					theme.fg("muted", " • ") +
-					theme.fg("accent", effort) +
-					(preview
-						? theme.fg("muted", " • task: ") + theme.fg("dim", preview)
-						: ""),
+					theme.fg("accent", effort),
 				0,
 				0,
 			);
@@ -599,9 +596,48 @@ export default function delegateExtension(pi: ExtensionAPI) {
 				}
 				return text;
 			};
+			const renderAssignedTask = (task: string, expanded: boolean) => {
+				const cleanTask = task.trimEnd();
+				const lines = cleanTask
+					.split(/\r?\n/)
+					.map((line) => line.trimEnd())
+					.filter((line) => line.trim().length > 0);
+				if (!cleanTask || lines.length === 0) return undefined;
+
+				const hiddenLines = Math.max(0, lines.length - COLLAPSED_PREVIEW_LINES);
+				const body = expanded
+					? cleanTask
+					: lines.slice(0, COLLAPSED_PREVIEW_LINES).join("\n");
+				const box = new Box(1, 0);
+				box.addChild(
+					new Text(theme.fg("muted", "─── assigned task ───"), 0, 0),
+				);
+				box.addChild(new Text(theme.fg("toolOutput", body), 0, 0));
+
+				const expandHint = keyHint("app.tools.expand", "expand assigned task");
+				const hint = expanded
+					? keyHint("app.tools.expand", "collapse assigned task")
+					: hiddenLines > 0
+						? `${theme.fg(
+								"warning",
+								`… ${hiddenLines} more ${hiddenLines === 1 ? "line" : "lines"} hidden`,
+							)} • ${expandHint}`
+						: `${theme.fg("dim", "compact task")} • ${expandHint}`;
+				box.addChild(new Text(hint, 0, 0));
+				return box;
+			};
 
 			if (details?.success === false && options.isPartial) {
-				return new Text(renderStatus("running", "muted", details, true), 0, 0);
+				const container = new Container();
+				container.addChild(
+					new Text(renderStatus("running", "muted", details, true), 0, 0),
+				);
+				const task = renderAssignedTask(
+					details.assignedTask ?? "",
+					options.expanded,
+				);
+				if (task) container.addChild(task);
+				return container;
 			}
 			if (details?.success === true) {
 				const line = renderStatus("done", "success", details, true);
@@ -609,10 +645,11 @@ export default function delegateExtension(pi: ExtensionAPI) {
 				const output = content?.type === "text" ? content.text : "";
 				if (!options.expanded) {
 					const preview = formatCollapsedPreview(output);
-					if (!preview.text) return new Text(line, 0, 0);
-
 					const container = new Container();
 					container.addChild(new Text(line, 0, 0));
+					const task = renderAssignedTask(details.assignedTask ?? "", false);
+					if (task) container.addChild(task);
+					if (!preview.text) return container;
 					container.addChild(
 						new Text(theme.fg("muted", "─── child report preview ───"), 0, 0),
 					);
@@ -641,6 +678,8 @@ export default function delegateExtension(pi: ExtensionAPI) {
 				container.addChild(
 					new Text(keyHint("app.tools.expand", "collapse child report"), 0, 0),
 				);
+				const task = renderAssignedTask(details.assignedTask ?? "", true);
+				if (task) container.addChild(task);
 				if (detailedUsage) {
 					container.addChild(
 						new Text(theme.fg("dim", `usage • ${detailedUsage}`), 0, 0),

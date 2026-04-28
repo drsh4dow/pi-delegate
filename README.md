@@ -61,7 +61,10 @@ If `openai-codex/gpt-5.5` is missing or unauthenticated, `delegate` falls back t
 - recursive delegation tools are disabled inside the child
 - sequential execution to avoid concurrent delegated writes
 - 15-minute internal timeout
-- running calls render as neutral progress, not failure; the collapsed row shows short model id, elapsed time, child tool count, and a small completed-report preview
+- running calls render as neutral progress, not failure; the tool header stays compact, while the result area shows the assigned task in a boxed card
+- collapsed task cards show the first four non-empty task lines with a hidden-line hint; expanded tool output shows the full assigned task
+- completed calls include a bounded child-report preview when collapsed and the full child report when expanded
+- child final reports are prompted as handoff-ready summaries with task, result, evidence, files, verification, and only-important caveats/next steps
 - failures throw native Pi tool errors with a concise reason plus model/duration/tool-count metadata
 - final child output is truncated at Pi's standard 2000-line/50KB tool-output limits, with the full report saved to a temp file when truncation occurs
 - normal Pi tools are available to the child, including write-capable tools; this is intentional and enforced by prompt/user intent rather than by a read-only tool sandbox
