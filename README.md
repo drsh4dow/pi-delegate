@@ -64,7 +64,8 @@ If `openai-codex/gpt-5.5` is missing or unauthenticated, `delegate` falls back t
 - running calls render as neutral progress, not failure; the tool header stays compact, while the result area shows the assigned task in a boxed card
 - collapsed task cards show the first four non-empty task lines with a hidden-line hint; expanded tool output shows the full assigned task
 - completed calls include a bounded child-report preview when collapsed and the full child report when expanded
-- child final reports are prompted as handoff-ready summaries with task, result, evidence, files, verification, and only-important caveats/next steps
+- parent-facing delegation policy is tool-owned through the active `delegate` tool description, snippet, guidelines, and parameter descriptions; the package does not append a separate parent system prompt
+- child final reports are prompted as handoff-ready summaries with task, result, evidence, files, verification, and only-important handoff notes
 - failures throw native Pi tool errors with a concise reason plus model/duration/tool-count metadata
 - final child output is truncated at Pi's standard 2000-line/50KB tool-output limits, with the full report saved to a temp file when truncation occurs
 - normal Pi tools are available to the child, including write-capable tools; this is intentional and enforced by prompt/user intent rather than by a read-only tool sandbox
@@ -101,7 +102,7 @@ PI_OFFLINE=1 bunx --bun pi --no-extensions -e . --list-models >/tmp/pi-delegate-
 
 ```bash
 PI_DELEGATE_LIVE=1 \
-PI_DELEGATE_EVAL_JUDGE_MODEL=openai/gpt-5.5 \
+PI_DELEGATE_EVAL_JUDGE_MODEL=openai/gpt-5.5:low \
 PI_DELEGATE_EVAL_TIMEOUT_MS=1800000 \
 PI_DELEGATE_EVAL_MAX_TOKENS=1500000 \
 PI_DELEGATE_EVAL_MAX_COST_USD=30 \
@@ -109,6 +110,6 @@ PI_DELEGATE_EVAL_ARTIFACT_DIR=artifacts/live-eval \
 bun run test:live
 ```
 
-`PI_DELEGATE_EVAL_JUDGE_MODEL` defaults to `openai/gpt-5.5`. Use `PI_DELEGATE_EVAL_TASKS=id1,id2` to run a subset while tuning the policy.
+`PI_DELEGATE_EVAL_MODEL` and `PI_DELEGATE_EVAL_JUDGE_MODEL` default to `openai/gpt-5.5:low`. Use `PI_DELEGATE_EVAL_TASKS=id1,id2` to run a subset while tuning the policy.
 
-The suite records sanitized JSONL traces plus `summary.json`, including delegate decision and effort-selection KPIs. During baseline it hard-fails only crashes, budget overruns, read-only writes, and forbidden delegate calls; KPI scores are reported for threshold calibration.
+The suite records sanitized JSONL traces plus `summary.json`, including delegate decision and effort-selection KPIs. It hard-fails crashes, budget overruns, read-only writes, required/forbidden delegate decision misses, and effort mismatches when delegate is called with an expected effort; judge quality scores remain calibration data.

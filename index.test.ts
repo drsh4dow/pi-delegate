@@ -38,21 +38,15 @@ function getTool(): DelegateTool {
 	return tool as DelegateTool;
 }
 
-function getBeforeAgentStartHandler() {
-	let handler: unknown;
+function getRegisteredEvents(): string[] {
+	const events: string[] = [];
 	delegateExtension({
-		on(event: string, fn: unknown) {
-			if (event === "before_agent_start") handler = fn;
+		on(event: string) {
+			events.push(event);
 		},
 		registerTool: () => {},
 	} as unknown as ExtensionAPI);
-	if (typeof handler !== "function") {
-		throw new Error("before_agent_start handler was not registered");
-	}
-	return handler as (event: {
-		systemPrompt: string;
-		systemPromptOptions: { selectedTools?: string[] };
-	}) => { systemPrompt: string } | undefined;
+	return events;
 }
 
 function fakeContext(input: {
@@ -96,53 +90,52 @@ describe("delegate extension", () => {
 		expect(tool.name).toBe("delegate");
 		expect(tool.label).toBe("Delegate");
 		expect(tool.executionMode).toBe("sequential");
-		expect(tool.description).toContain("subagent/delegated work");
+		expect(tool.description).toContain("isolated");
 		expect(tool.description).toContain("required policy");
 		expect(tool.description).toContain("final report");
 		expect(tool.description).toContain("may modify files");
-		expect(tool.promptSnippet).toContain("MUST use");
-		expect(tool.promptSnippet).toContain("non-trivial code fixes with tests");
-		expect(promptGuidelines).toHaveLength(7);
+		expect(tool.promptSnippet).toContain("Required once early");
+		expect(tool.promptSnippet).toContain("isolated child Pi final report");
+		expect(promptGuidelines).toHaveLength(4);
 		const joinedGuidelines = promptGuidelines.join("\n");
-		expect(joinedGuidelines).toContain("Delegate policy");
+		for (const guideline of promptGuidelines) {
+			expect(guideline).toContain("delegate");
+		}
 		expect(joinedGuidelines).toContain("broad repo scanning");
-		expect(joinedGuidelines).toContain("non-trivial code modification");
-		expect(joinedGuidelines).toContain("call delegate exactly once early");
-		expect(joinedGuidelines).toContain(
-			"even when the repo or task looks small",
-		);
-		expect(joinedGuidelines).toContain("fix failing behavior with tests");
-		expect(joinedGuidelines).toContain("do not implement these tasks directly");
-		expect(joinedGuidelines).toContain(
-			"before doing your own read/find/bash/web research",
-		);
-		expect(joinedGuidelines).toContain("required way to invoke a subagent");
-		expect(joinedGuidelines).toContain("read-only");
+		expect(joinedGuidelines).toContain("current library/API research");
+		expect(joinedGuidelines).toContain("non-trivial implementation");
+		expect(joinedGuidelines).toContain("noisy/root-cause investigation");
+		expect(joinedGuidelines).toContain("call delegate once early");
+		expect(joinedGuidelines).toContain("trivial fact lookups");
 		expect(joinedGuidelines).toContain("obvious typo/format/text-only edits");
-		expect(joinedGuidelines).toContain("behavior bugs are not trivial edits");
-		expect(joinedGuidelines).toContain("handoff-ready output");
+		expect(joinedGuidelines).toContain("self-contained delegate task");
+		expect(joinedGuidelines).toContain("constraints");
+		expect(joinedGuidelines).toContain("verification");
 		expect(joinedGuidelines).toContain("choose effort explicitly");
-		expect(joinedGuidelines).toContain("fast for scouting");
+		expect(joinedGuidelines).toContain("fast only for read-only scouting");
 		expect(joinedGuidelines).toContain("docs/API lookup");
-		expect(joinedGuidelines).toContain("smart for review");
+		expect(joinedGuidelines).toContain("smart for any review or critique");
 		expect(joinedGuidelines).toContain("ambiguous or high-risk design");
-		expect(joinedGuidelines).toContain(
-			"balanced for ordinary focused implementation",
-		);
+		expect(joinedGuidelines).toContain("fixing failing tests/behavior");
 		expect(parameters.properties.task?.description).toContain(
 			"Self-contained task",
 		);
 		expect(parameters.properties.task?.description).toContain("read-only");
 		expect(parameters.properties.task?.description).toContain("verification");
 		expect(parameters.properties.task?.description).toContain("handoff-ready");
-		expect(parameters.properties.effort?.description).toContain("scouting");
+		expect(parameters.properties.effort?.description).toContain(
+			"read-only scouting",
+		);
 		expect(parameters.properties.effort?.description).toContain(
 			"docs/API lookup",
 		);
 		expect(parameters.properties.effort?.description).toContain("review");
+		expect(parameters.properties.effort?.description).toContain(
+			"noisy/root-cause investigation",
+		);
 		expect(parameters.properties.effort?.description).toContain("debugging");
 		expect(parameters.properties.effort?.description).toContain(
-			"ordinary focused implementation",
+			"fixing failing tests/behavior",
 		);
 		expect(parameters.properties.effort?.default).toBe("balanced");
 		expect(parameters.required).toEqual(["task"]);
@@ -152,35 +145,22 @@ describe("delegate extension", () => {
 		]);
 	});
 
-	test("adds delegate decision policy only when delegate is active", () => {
-		const handler = getBeforeAgentStartHandler();
-
-		expect(
-			handler({
-				systemPrompt: "base",
-				systemPromptOptions: { selectedTools: ["read", "delegate"] },
-			})?.systemPrompt,
-		).toContain("Delegation decision policy");
-		expect(
-			handler({
-				systemPrompt: "base",
-				systemPromptOptions: { selectedTools: ["read"] },
-			}),
-		).toBeUndefined();
+	test("keeps parent delegation guidance tool-owned", () => {
+		expect(getRegisteredEvents()).not.toContain("before_agent_start");
 	});
 
 	test("child prompt defines the delegated worker contract", async () => {
 		const source = await Bun.file("extensions/delegate.ts").text();
 
-		expect(source).toContain("Your contract:");
-		expect(source).toContain("If the task says read-only, do not modify files");
-		expect(source).toContain("Prefer evidence over assertion");
-		expect(source).toContain("Final response format:");
-		expect(source).toContain("Task: one-line restatement");
-		expect(source).toContain("Evidence: concise bullets");
-		expect(source).toContain("Use the shortest useful report");
-		expect(source).toContain("Research/docs tasks");
-		expect(source).toContain("Verification: commands run and outcomes");
+		expect(source).toContain("Parent called you as a bounded tool");
+		expect(source).toContain("If the task is read-only, do not write files");
+		expect(source).toContain("Evidence before claims");
+		expect(source).toContain("Verify important claims when practical");
+		expect(source).toContain("Final report:");
+		expect(source).toContain("Task: one-line assigned task");
+		expect(source).toContain("Evidence: bullets");
+		expect(source).toContain("Scout/research/review");
+		expect(source).toContain("Return only the final report");
 	});
 
 	test("package metadata follows Pi package distribution conventions", async () => {

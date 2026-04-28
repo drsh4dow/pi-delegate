@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = dirname(fileURLToPath(import.meta.url));
 const { PI_DELEGATE_LIVE } = process.env;
 const liveEnabled = PI_DELEGATE_LIVE === "1";
-const defaultEvalModel = "openai/gpt-5.5:minimal";
+const defaultEvalModel = "openai/gpt-5.5:low";
 const defaultJudgeModel = defaultEvalModel;
 
 function evalModel() {
@@ -779,10 +779,25 @@ function hardFailuresFor(
 		}
 	}
 	if (
+		task.expectDelegate === "required" &&
+		attempt.enabled.delegateCalls === 0
+	) {
+		failures.push(`${task.id}: delegate was not called on required task`);
+	}
+	if (
 		task.expectDelegate === "forbidden" &&
 		attempt.enabled.delegateCalls > 0
 	) {
 		failures.push(`${task.id}: delegate was called on forbidden task`);
+	}
+	if (
+		task.expectedDelegateEffort &&
+		attempt.enabled.delegateCalls > 0 &&
+		attempt.effortScore !== 1
+	) {
+		failures.push(
+			`${task.id}: expected delegate effort ${task.expectedDelegateEffort}, saw ${attempt.enabled.delegateEfforts.join(", ")}`,
+		);
 	}
 	return failures;
 }
@@ -917,6 +932,57 @@ describe("live eval scoring", () => {
 		expect(scoreEffort("smart", ["fast", "smart"])).toBe(1);
 		expect(scoreEffort("balanced", ["fast"])).toBe(0);
 		expect(scoreEffort("smart", [])).toBe(0);
+	});
+
+	test("hard-fails required delegate and expected effort misses", () => {
+		const run = (delegateEfforts: DelegateEffort[] = []): RunSummary => ({
+			mode: "enabled",
+			exitCode: 0,
+			durationMs: 1,
+			delegateCalls: delegateEfforts.length,
+			delegateSucceeded: delegateEfforts.length,
+			delegateFailed: 0,
+			delegateEfforts,
+			parentUsage: emptyUsage(),
+			childUsage: emptyUsage(),
+			finalText: "",
+			stderr: "",
+			jsonParseErrors: 0,
+			readOnlyChangedFiles: [],
+			artifact: "artifact.jsonl",
+		});
+		const task: FixtureTask = {
+			id: "required-fast",
+			expectDelegate: "required",
+			expectedDelegateEffort: "fast",
+			readOnly: true,
+			prompt: "",
+			expectedOutcome: "",
+			files: {},
+		};
+
+		expect(
+			hardFailuresFor(task, {
+				attempt: 1,
+				enabled: run(),
+				disabled: run(),
+				decisionScore: 0,
+				effortScore: 0,
+				enabledQuality: null,
+				disabledQuality: null,
+			}),
+		).toEqual(["required-fast: delegate was not called on required task"]);
+		expect(
+			hardFailuresFor(task, {
+				attempt: 1,
+				enabled: run(["balanced"]),
+				disabled: run(),
+				decisionScore: 1,
+				effortScore: 0,
+				enabledQuality: null,
+				disabledQuality: null,
+			}),
+		).toEqual(["required-fast: expected delegate effort fast, saw balanced"]);
 	});
 
 	test("selects a requested task subset", () => {

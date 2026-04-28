@@ -28,39 +28,31 @@ const COLLAPSED_PREVIEW_LINES = 4;
 const COLLAPSED_PREVIEW_CHARS = 360;
 const REQUESTED_MODEL = "openai-codex/gpt-5.5";
 export const CHILD_EXTENSION_PATHS_ENV = "PI_CHILD_EXTENSION_PATHS";
-const DELEGATE_DECISION_PROMPT = `Delegation decision policy:
-- If delegate is available and the user asks for broad repo scanning, noisy investigation, current library/API research, independent code review, plan critique, or non-trivial code changes with verification, call delegate once early before doing direct exploration or edits.
-- Choose effort explicitly: fast for scouting/recon/repo mapping/docs/API lookup, smart for review/critique/debugging/ambiguous or high-risk design, balanced for ordinary focused implementation or moderate investigation.
-- Ask for handoff-ready output: concise result, evidence, inspected/changed files, verification, and caveats/next steps only when useful.
-- Do not delegate trivial fact lookups, obvious typo/format/text-only edits, or work the parent can finish with one or two cheap local tool calls.
-- For read-only work, pass read-only constraints to delegate. For write-capable work, delegate only when the user's request allows edits.`;
 
-const DELEGATE_PROMPT = `You are a delegated child Pi agent running in a fresh context for a parent agent.
+const DELEGATE_PROMPT = `You are Pi running as a delegated child agent in a fresh context. Parent called you as a bounded tool, not as the conversation owner.
 
-Your contract:
-- Complete only the assigned task. Do not continue the parent conversation.
-- Treat the task as self-contained. Use repository/project instructions and tools as needed.
-- Respect scope exactly. If the task says read-only, do not modify files. If edits are allowed, make focused changes only; do not commit, revert unrelated work, or touch unrelated files.
-- Prefer evidence over assertion. Inspect before changing. Verify important claims with tests, typechecks, commands, or source references when practical.
-- If blocked or uncertain, make the smallest reasonable investigation, then report the blocker clearly instead of guessing.
-- Keep intermediate exploration out of the final answer.
+Mission:
+- Complete only the assigned task. Do not continue the parent conversation or expand scope.
+- Use normal Pi/project instructions, tools, and current repository context as needed.
+- If the task is read-only, do not write files or run state-changing commands. If edits are allowed, make focused, reversible changes only; do not commit, revert unrelated work, or touch unrelated files.
+- Inspect before acting. Prefer root-cause fixes, local reasoning, simple designs, and clear evidence over speculation.
+- Preserve context: use tools deliberately, keep exploration out of the final answer, and never include scratchpad or transcript.
+- Evidence before claims: cite files, symbols, commands, outcomes, or URLs. Verify important claims when practical; source inspection is valid evidence for read-only recon.
+- If blocked or uncertain, do the smallest useful investigation and report the blocker instead of guessing.
 
-Final response format:
-- Task: one-line restatement of the assigned task.
-- Result: concise answer or summary of completed work.
-- Evidence: concise bullets with files, symbols, commands, outcomes, or source URLs when they support the result.
-- Files inspected/changed: relevant paths only.
+Task modes:
+- Scout/research/review: report facts, risks, and concrete next steps. Do not edit unless the task explicitly permits edits.
+- Implementation/debugging: change only what is needed, then run the most relevant checks practical for the change.
+
+Final report:
+- Task: one-line assigned task.
+- Result: concise outcome.
+- Evidence: bullets with relevant files, symbols, commands, outcomes, or URLs.
+- Files: inspected/changed paths only.
 - Verification: commands run and outcomes, or "not run" with reason.
-- Parent handoff: only if the parent must decide, continue, or handle risk.
-- Caveats/next steps: only if important.
+- Handoff: decisions, risks, or next steps for the parent only when important.
 
-Task-specific guidance:
-- Scout/recon tasks: report map, inspected files, important risks, and where to look next.
-- Research/docs tasks: include current facts and concise citations/URLs for online or documentation sources.
-- Review tasks: prioritize findings with severity, evidence, and concrete remediation direction.
-- Implementation tasks: emphasize changed behavior, changed files, and validation instead of implementation narration.
-
-Use the shortest useful report. Prefer 10-25 lines; up to about 50 lines is fine when the task genuinely needs richer research/review detail. Return only the final report.`;
+Use the shortest useful report, usually 10-25 lines. Return only the final report.`;
 
 export const DEFAULT_DELEGATE_MODEL = {
 	provider: "openai-codex",
@@ -75,12 +67,12 @@ export const DELEGATION_TOOL_DENYLIST = [
 const DelegateParams = Type.Object({
 	task: Type.String({
 		description:
-			"Self-contained task for the delegated child agent. Include objective, relevant context/files, constraints, whether edits are allowed or read-only, expected output, verification requirements, and a request for handoff-ready output.",
+			"Self-contained task for the delegated child agent. Include objective, useful context/files, constraints, edit permission/read-only status, expected output, verification needs, and request for a concise handoff-ready report.",
 	}),
 	effort: Type.Optional(
 		StringEnum(["fast", "balanced", "smart"], {
 			description:
-				"Speed vs depth for the child agent. Choose explicitly: fast=scouting/recon/repo mapping/docs/API lookup, smart=review/critique/debugging/ambiguous or high-risk design, balanced=ordinary focused implementation or moderate investigation. Omitted effort falls back to balanced.",
+				"Speed vs depth for the child agent. Always set this explicitly. Use fast only for read-only scouting/recon/repo mapping/docs/API lookup. Use smart for any review or critique, including small read-only reviews, plus noisy/root-cause investigation, debugging, ambiguous or high-risk design. Use balanced for focused implementation, fixing failing tests/behavior, or moderate investigation. Omitted effort falls back to balanced.",
 			default: "balanced",
 		}),
 	),
@@ -360,28 +352,18 @@ function formatCollapsedPreview(text: string): {
 }
 
 export default function delegateExtension(pi: ExtensionAPI) {
-	pi.on("before_agent_start", (event) => {
-		if (!event.systemPromptOptions.selectedTools?.includes(TOOL_NAME)) return;
-		return {
-			systemPrompt: `${event.systemPrompt}\n\n${DELEGATE_DECISION_PROMPT}`,
-		};
-	});
-
 	pi.registerTool<typeof DelegateParams, DelegateDetails>({
 		name: TOOL_NAME,
 		label: "Delegate",
 		description:
-			"Run a fresh child Pi agent for subagent/delegated work. Use delegate as required policy for non-trivial investigation, research, review, broad repo scanning, plan critique, or focused implementation when isolation would keep the parent context clean. The parent receives only the child’s final report. The child has normal Pi tools and may modify files; delegate write-capable tasks only when user intent permits edits.",
+			"Run a fresh child Pi agent as an isolated, bounded capability; the parent receives only the child’s final report and stays responsible for the final answer. Call delegate once early as required policy before doing your own broad exploration for: broad repo scanning or mapping, noisy/root-cause investigation, current docs/API/library research, independent review, plan critique, debugging, or non-trivial implementation with verification. This requirement applies even in tiny repositories and even when you could do the work yourself; failing behavior/tests, behavior bugs, multi-file reasoning, and library/API mismatches are not trivial. For user tasks that allow edits, delegate the actual focused implementation and verification; do not downgrade an edit/fix request into read-only scouting. Do not use delegate for trivial answers, obvious typo/format/text-only edits, or tasks answerable with one or two cheap local tool calls. Always pass explicit effort: fast=read-only scout/map/docs/API lookup, smart=any review or critique even small/noisy investigation/debugging/ambiguous/high-risk design, balanced=focused implementation/fixing failing tests or moderate investigation. The child has normal Pi tools and may modify files; delegate write-capable tasks only when user intent permits edits.",
 		promptSnippet:
-			"MUST use for broad/noisy/research/review/plan work and non-trivial code fixes with tests; delegates to an isolated child Pi agent and returns only the child’s final result.",
+			"Required once early for broad scans, noisy/root-cause research, reviews, plan critiques, debugging, and non-trivial verified code work; returns only an isolated child Pi final report.",
 		promptGuidelines: [
-			"Delegate policy: for broad repo scanning, noisy investigation, current library/API research, independent code review, plan critique, non-trivial code modification, or focused implementation with verification, call delegate exactly once early unless the user forbids delegation; this policy applies even when the repo or task looks small.",
-			"For prompts asking to research, investigate, review, critique, map, or fix failing behavior with tests, call delegate before doing your own read/find/bash/web research; do not implement these tasks directly unless they are explicitly a trivial typo/single-line edit.",
-			"Use delegate as the required way to invoke a subagent or delegated worker; do not manually simulate a subagent in chat.",
-			"When calling delegate, include the objective, relevant context/files, constraints, whether edits are allowed, expected output, verification requirements, a request for handoff-ready output, and an explicit effort.",
-			"When calling delegate, choose effort explicitly: fast for scouting/recon/repo mapping/docs/API lookup; smart for review/critique/debugging/ambiguous or high-risk design; balanced for ordinary focused implementation or moderate investigation.",
-			"Use delegate for write-capable tasks only when user intent allows edits; mark investigation, research, review, and critique tasks read-only.",
-			"Do not use delegate for trivial fact lookups, obvious typo/format/text-only edits, or questions the parent can answer with one or two cheap local tool calls; failing tests and behavior bugs are not trivial edits.",
+			"Use delegate as required policy for broad repo scanning, repo mapping, noisy/root-cause investigation, current library/API research, independent review, plan critique, debugging, or non-trivial implementation with verification; call delegate once early before doing your own broad exploration unless the user forbids delegation.",
+			"Do not use delegate for trivial fact lookups, obvious typo/format/text-only edits, or questions answerable with one or two cheap local tool calls; behavior bugs, failing tests, library/API mismatches, and multi-file reasoning are not trivial even in tiny repos.",
+			"When calling delegate, write a self-contained delegate task with objective, useful context/files, constraints, edit permission or read-only status, expected output, verification needs, and request for a concise handoff-ready report; if the user asked for an allowed edit/fix, ask the child to implement and verify, not merely scout.",
+			"When calling delegate, choose effort explicitly: fast only for read-only scouting/recon/repo mapping/docs/API lookup; smart for any review or critique even small ones, noisy/root-cause investigation, debugging, ambiguous or high-risk design; balanced for focused implementation, fixing failing tests/behavior, or moderate investigation.",
 		],
 		parameters: DelegateParams,
 		executionMode: "sequential",

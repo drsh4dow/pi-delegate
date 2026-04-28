@@ -72,8 +72,8 @@ jobs:
           PI_DELEGATE_EVAL_POSTCHECK_TIMEOUT_MS: ${{ vars.PI_DELEGATE_EVAL_POSTCHECK_TIMEOUT_MS || '60000' }}
           PI_DELEGATE_EVAL_MAX_TOKENS: ${{ vars.PI_DELEGATE_EVAL_MAX_TOKENS || '1500000' }}
           PI_DELEGATE_EVAL_MAX_COST_USD: ${{ vars.PI_DELEGATE_EVAL_MAX_COST_USD || '30' }}
-          PI_DELEGATE_EVAL_MODEL: ${{ vars.PI_DELEGATE_EVAL_MODEL || 'openai/gpt-5.5:minimal' }}
-          PI_DELEGATE_EVAL_JUDGE_MODEL: ${{ vars.PI_DELEGATE_EVAL_JUDGE_MODEL || 'openai/gpt-5.5:minimal' }}
+          PI_DELEGATE_EVAL_MODEL: ${{ vars.PI_DELEGATE_EVAL_MODEL || 'openai/gpt-5.5:low' }}
+          PI_DELEGATE_EVAL_JUDGE_MODEL: ${{ vars.PI_DELEGATE_EVAL_JUDGE_MODEL || 'openai/gpt-5.5:low' }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
