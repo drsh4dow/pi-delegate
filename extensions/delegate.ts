@@ -14,6 +14,7 @@ import {
 	formatSize,
 	getAgentDir,
 	getMarkdownTheme,
+	keyHint,
 	SessionManager,
 	type ToolInfo,
 	type TruncationResult,
@@ -25,6 +26,7 @@ const TOOL_NAME = "delegate";
 const TIMEOUT_MS = 15 * 60 * 1000;
 const COLLAPSED_PREVIEW_LINES = 4;
 const COLLAPSED_PREVIEW_CHARS = 360;
+const TASK_PREVIEW_CHARS = 84;
 const REQUESTED_MODEL = "openai-codex/gpt-5.5";
 const DELEGATE_DECISION_PROMPT = `Delegation decision policy:
 - If delegate is available and the user asks for broad repo scanning, noisy investigation, current library/API research, independent code review, plan critique, or non-trivial code changes with verification, call delegate once early before doing direct exploration or edits.
@@ -308,21 +310,48 @@ function formatStatusParts(details: DelegateDetails): string {
 	return text;
 }
 
-function formatCollapsedPreview(text: string): string {
+function formatCollapsedPreview(text: string): {
+	text: string;
+	truncated: boolean;
+	hiddenLines: number;
+} {
 	const lines = text
 		.trim()
 		.split(/\r?\n/)
 		.map((line) => line.trimEnd())
 		.filter((line) => line.trim().length > 0);
-	if (lines.length === 0) return "";
+	if (lines.length === 0) {
+		return { text: "", truncated: false, hiddenLines: 0 };
+	}
 
-	let truncated = lines.length > COLLAPSED_PREVIEW_LINES;
+	const hiddenLines = Math.max(0, lines.length - COLLAPSED_PREVIEW_LINES);
+	let truncated = hiddenLines > 0;
 	let preview = lines.slice(0, COLLAPSED_PREVIEW_LINES).join("\n");
 	if (preview.length > COLLAPSED_PREVIEW_CHARS) {
 		preview = preview.slice(0, COLLAPSED_PREVIEW_CHARS - 1).trimEnd();
 		truncated = true;
 	}
-	return truncated ? `${preview}\n…` : preview;
+	return { text: preview, truncated, hiddenLines };
+}
+
+function formatDelegateTaskPreview(
+	task: string | undefined,
+	cwd: string,
+): string {
+	const lines = (task ?? "")
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.filter(Boolean);
+	const objective = lines
+		.map((line) => line.match(/\b(objective|goal):\s*(.+)/i)?.[2]?.trim())
+		.find((line) => line && line.length > 0);
+	const source = objective ?? lines[0] ?? "";
+	let preview = source.replace(/\s+/g, " ").trim();
+	if (cwd) preview = preview.replaceAll(cwd, ".");
+	if (preview.length > TASK_PREVIEW_CHARS) {
+		preview = `${preview.slice(0, TASK_PREVIEW_CHARS - 1).trimEnd()}…`;
+	}
+	return preview;
 }
 
 export default function delegateExtension(pi: ExtensionAPI) {
@@ -519,20 +548,16 @@ export default function delegateExtension(pi: ExtensionAPI) {
 				details,
 			};
 		},
-		renderCall(args, theme) {
+		renderCall(args, theme, context) {
 			const effort = args.effort ?? "balanced";
-			const firstLine = args.task?.trim().split(/\r?\n/, 1)[0]?.trim();
-			const normalized = firstLine?.replace(/\s+/g, " ");
-			const preview = normalized
-				? normalized.length > 96
-					? `${normalized.slice(0, 95).trimEnd()}…`
-					: normalized
-				: "";
+			const preview = formatDelegateTaskPreview(args.task, context.cwd);
 			return new Text(
 				theme.fg("toolTitle", theme.bold(TOOL_NAME)) +
 					theme.fg("muted", " • ") +
 					theme.fg("accent", effort) +
-					(preview ? theme.fg("muted", " • ") + theme.fg("dim", preview) : ""),
+					(preview
+						? theme.fg("muted", " • task: ") + theme.fg("dim", preview)
+						: ""),
 				0,
 				0,
 			);
@@ -568,20 +593,38 @@ export default function delegateExtension(pi: ExtensionAPI) {
 				const output = content?.type === "text" ? content.text : "";
 				if (!options.expanded) {
 					const preview = formatCollapsedPreview(output);
-					if (!preview) return new Text(line, 0, 0);
+					if (!preview.text) return new Text(line, 0, 0);
 
 					const container = new Container();
 					container.addChild(new Text(line, 0, 0));
 					container.addChild(
 						new Text(theme.fg("muted", "─── child report preview ───"), 0, 0),
 					);
-					container.addChild(new Text(theme.fg("toolOutput", preview), 0, 0));
+					container.addChild(
+						new Text(theme.fg("toolOutput", preview.text), 0, 0),
+					);
+					const previewHint = preview.truncated
+						? preview.hiddenLines > 0
+							? `… ${preview.hiddenLines} more ${preview.hiddenLines === 1 ? "line" : "lines"} hidden • preview truncated`
+							: "preview truncated"
+						: "compact preview";
+					container.addChild(
+						new Text(
+							theme.fg(preview.truncated ? "warning" : "dim", previewHint) +
+								` • ${keyHint("app.tools.expand", "expand child report")}`,
+							0,
+							0,
+						),
+					);
 					return container;
 				}
 
 				const detailedUsage = formatDetailedUsage(details.childUsage);
 				const container = new Container();
 				container.addChild(new Text(line, 0, 0));
+				container.addChild(
+					new Text(keyHint("app.tools.expand", "collapse child report"), 0, 0),
+				);
 				if (detailedUsage) {
 					container.addChild(
 						new Text(theme.fg("dim", `usage • ${detailedUsage}`), 0, 0),

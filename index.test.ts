@@ -67,6 +67,7 @@ function fakeContext(input: {
 }
 
 function fakeTheme(): Parameters<NonNullable<DelegateTool["renderCall"]>>[1] {
+	initTheme(undefined, false);
 	return {
 		fg: (_name: string, text: string) => text,
 		bold: (text: string) => text,
@@ -354,12 +355,14 @@ describe("delegate extension", () => {
 			) ?? { render: () => [] },
 		);
 
-		expect(text.split("\n").length).toBeLessThanOrEqual(4);
+		expect(text.split("\n").length).toBeLessThanOrEqual(5);
 		expect(text).toContain("done • gpt-5.5 • 1.2s • 3 tools");
 		expect(text).toContain("↑1.5k ↓750 $0.0330");
 		expect(text).toContain("child report preview");
 		expect(text).toContain("# Child report");
 		expect(text).toContain("This is now visible");
+		expect(text).toContain("compact preview •");
+		expect(text).toContain("expand child report");
 	});
 
 	test("bounds long collapsed delegate report previews", () => {
@@ -413,7 +416,9 @@ describe("delegate extension", () => {
 
 		expect(text).toContain("line one");
 		expect(text).toContain("line four");
-		expect(text).toContain("…");
+		expect(text).toContain("… 1 more line");
+		expect(text).toContain("preview truncated");
+		expect(text).toContain("expand child report");
 		expect(text).not.toContain("line five should not render");
 		expect(text.split("\n").length).toBeLessThanOrEqual(7);
 	});
@@ -508,6 +513,7 @@ describe("delegate extension", () => {
 		expect(text).toContain("2 turns ↑1.5k ↓750 R120 W50 total 2.4k $0.0330");
 		expect(text).toContain("output truncated");
 		expect(text).toContain("/tmp/full-output.txt");
+		expect(text).toContain("collapse child report");
 		expect(text).toContain("Child report");
 		expect(text).toContain("Full expanded report.");
 	});
@@ -525,10 +531,38 @@ describe("delegate extension", () => {
 			) ?? { render: () => [] },
 		);
 
-		expect(text).toStartWith("delegate • smart • Inspect this very noisy");
+		expect(text).toStartWith(
+			"delegate • smart • task: Inspect this very noisy",
+		);
 		expect(text).toContain("…");
 		expect(text).not.toContain("Do not show this second line");
-		expect(text.length).toBeLessThan(130);
+		expect(text.length).toBeLessThan(140);
+	});
+
+	test("renders more useful delegate call previews from objective lines", () => {
+		const tool = getTool();
+		const text = renderText(
+			tool.renderCall?.(
+				{
+					effort: "balanced",
+					task: [
+						"Read-only reconnaissance in /workspace/project for a broad task. Objective: identify compact delegate output UI improvements and tests.",
+						"Do not show this fallback line.",
+					].join("\n"),
+				},
+				fakeTheme(),
+				{ cwd: "/workspace/project" } as Parameters<
+					NonNullable<DelegateTool["renderCall"]>
+				>[2],
+			) ?? { render: () => [] },
+		);
+
+		expect(text).toContain(
+			"task: identify compact delegate output UI improvements and tests.",
+		);
+		expect(text).not.toContain("Read-only reconnaissance");
+		expect(text).not.toContain("Do not show this fallback line");
+		expect(text).not.toContain("/workspace/project");
 	});
 
 	test("truncates delegated final output and stores the full text", async () => {
