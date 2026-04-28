@@ -1,8 +1,9 @@
 import { describe, expect, mock, test } from "bun:test";
 import { unlink } from "node:fs/promises";
-import type {
-	ExtensionAPI,
-	ExtensionContext,
+import {
+	type ExtensionAPI,
+	type ExtensionContext,
+	initTheme,
 } from "@mariozechner/pi-coding-agent";
 import delegateExtension, {
 	DEFAULT_DELEGATE_MODEL,
@@ -300,6 +301,108 @@ describe("delegate extension", () => {
 		expect(text).not.toContain("failed •");
 	});
 
+	test("renders completed delegate results as one-line telemetry without output", () => {
+		const tool = getTool();
+		const details: DelegateDetails = {
+			success: true,
+			effort: "balanced",
+			requestedModel: "openai-codex/gpt-5.5",
+			model: "openai-codex/gpt-5.5",
+			thinking: "medium",
+			durationMs: 1234,
+			toolCalls: 3,
+			failedToolCalls: 0,
+			childUsage: {
+				turns: 2,
+				input: 1500,
+				output: 750,
+				cacheRead: 120,
+				cacheWrite: 50,
+				totalTokens: 2420,
+				cost: 0.033,
+			},
+			timedOut: false,
+			aborted: false,
+		};
+
+		const text = renderText(
+			tool.renderResult?.(
+				{
+					content: [
+						{ type: "text", text: "# Child report\n\nThis stays hidden." },
+					],
+					details,
+				},
+				{ expanded: false, isPartial: false },
+				fakeTheme(),
+				{ isError: false } as Parameters<
+					NonNullable<DelegateTool["renderResult"]>
+				>[3],
+			) ?? { render: () => [] },
+		);
+
+		expect(text.split("\n")).toHaveLength(1);
+		expect(text).toContain("done • gpt-5.5 • 1.2s • 3 tools");
+		expect(text).toContain("↑1.5k ↓750 $0.0330");
+		expect(text).not.toContain("Child report");
+		expect(text).not.toContain("This stays hidden");
+	});
+
+	test("renders expanded delegate results with full report and detailed usage", () => {
+		initTheme(undefined, false);
+		const tool = getTool();
+		const details: DelegateDetails = {
+			success: true,
+			effort: "smart",
+			requestedModel: "openai-codex/gpt-5.5",
+			model: "openai-codex/gpt-5.5",
+			thinking: "high",
+			durationMs: 65000,
+			toolCalls: 4,
+			failedToolCalls: 1,
+			childUsage: {
+				turns: 2,
+				input: 1500,
+				output: 750,
+				cacheRead: 120,
+				cacheWrite: 50,
+				totalTokens: 2420,
+				cost: 0.033,
+			},
+			timedOut: false,
+			aborted: false,
+			outputTruncated: true,
+			fullOutputFile: "/tmp/full-output.txt",
+		};
+
+		const text = renderText(
+			tool.renderResult?.(
+				{
+					content: [
+						{
+							type: "text",
+							text: "# Child report\n\nFull expanded report.",
+						},
+					],
+					details,
+				},
+				{ expanded: true, isPartial: false },
+				fakeTheme(),
+				{ isError: false } as Parameters<
+					NonNullable<DelegateTool["renderResult"]>
+				>[3],
+			) ?? { render: () => [] },
+		);
+
+		expect(text).toContain("done • gpt-5.5 • 1m5s • 4 tools");
+		expect(text).toContain("1 failed");
+		expect(text).toContain("2 turns ↑1.5k ↓750 R120 W50 total 2.4k $0.0330");
+		expect(text).toContain("output truncated");
+		expect(text).toContain("/tmp/full-output.txt");
+		expect(text).toContain("Child report");
+		expect(text).toContain("Full expanded report.");
+	});
+
 	test("renders concise delegate call previews", () => {
 		const tool = getTool();
 		const text = renderText(
@@ -313,7 +416,7 @@ describe("delegate extension", () => {
 			) ?? { render: () => [] },
 		);
 
-		expect(text).toStartWith("delegate smart • Inspect this very noisy");
+		expect(text).toStartWith("delegate • smart • Inspect this very noisy");
 		expect(text).toContain("…");
 		expect(text).not.toContain("Do not show this second line");
 		expect(text.length).toBeLessThan(130);

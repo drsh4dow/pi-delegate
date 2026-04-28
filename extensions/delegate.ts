@@ -13,12 +13,13 @@ import {
 	type ExtensionContext,
 	formatSize,
 	getAgentDir,
+	getMarkdownTheme,
 	SessionManager,
 	type ToolInfo,
 	type TruncationResult,
 	truncateHead,
 } from "@mariozechner/pi-coding-agent";
-import { Text } from "@mariozechner/pi-tui";
+import { Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
 
 const TOOL_NAME = "delegate";
 const TIMEOUT_MS = 15 * 60 * 1000;
@@ -256,6 +257,36 @@ function formatDuration(ms: number): string {
 	return `${Math.floor(ms / 60000)}m${Math.floor((ms % 60000) / 1000)}s`;
 }
 
+function formatTokens(count: number): string {
+	if (count < 1000) return count.toString();
+	if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
+	if (count < 1000000) return `${Math.round(count / 1000)}k`;
+	return `${(count / 1000000).toFixed(1)}M`;
+}
+
+function formatCompactUsage(stats: DelegateUsageStats): string {
+	const parts: string[] = [];
+	if (stats.input > 0) parts.push(`↑${formatTokens(stats.input)}`);
+	if (stats.output > 0) parts.push(`↓${formatTokens(stats.output)}`);
+	if (stats.cost > 0) parts.push(`$${stats.cost.toFixed(4)}`);
+	return parts.join(" ");
+}
+
+function formatDetailedUsage(stats: DelegateUsageStats): string {
+	const parts: string[] = [];
+	if (stats.turns > 0) {
+		parts.push(`${stats.turns} ${stats.turns === 1 ? "turn" : "turns"}`);
+	}
+	if (stats.input > 0) parts.push(`↑${formatTokens(stats.input)}`);
+	if (stats.output > 0) parts.push(`↓${formatTokens(stats.output)}`);
+	if (stats.cacheRead > 0) parts.push(`R${formatTokens(stats.cacheRead)}`);
+	if (stats.cacheWrite > 0) parts.push(`W${formatTokens(stats.cacheWrite)}`);
+	if (stats.totalTokens > 0)
+		parts.push(`total ${formatTokens(stats.totalTokens)}`);
+	if (stats.cost > 0) parts.push(`$${stats.cost.toFixed(4)}`);
+	return parts.join(" ");
+}
+
 function shortModelName(name: string | undefined): string {
 	if (!name) return "unknown model";
 	const slash = name.lastIndexOf("/");
@@ -481,33 +512,88 @@ export default function delegateExtension(pi: ExtensionAPI) {
 					: normalized
 				: "";
 			return new Text(
-				theme.fg("toolTitle", theme.bold(`${TOOL_NAME} `)) +
-					theme.fg("muted", `${effort}${preview ? ` • ${preview}` : ""}`),
+				theme.fg("toolTitle", theme.bold(TOOL_NAME)) +
+					theme.fg("muted", " • ") +
+					theme.fg("accent", effort) +
+					(preview ? theme.fg("muted", " • ") + theme.fg("dim", preview) : ""),
 				0,
 				0,
 			);
 		},
 		renderResult(result, options, theme, context) {
 			const details = result.details;
+			const renderStatus = (
+				label: "running" | "done",
+				color: "muted" | "success",
+				delegateDetails: DelegateDetails,
+				includeUsage: boolean,
+			) => {
+				let text =
+					theme.fg(color, label) +
+					theme.fg("muted", " • ") +
+					theme.fg("accent", formatStatusParts(delegateDetails));
+				const usage = includeUsage
+					? formatCompactUsage(delegateDetails.childUsage)
+					: "";
+				if (usage) text += theme.fg("dim", ` • ${usage}`);
+				if (delegateDetails.outputTruncated) {
+					text += theme.fg("warning", " • truncated");
+				}
+				return text;
+			};
+
 			if (details?.success === false && options.isPartial) {
-				return new Text(
-					theme.fg("muted", `running • ${formatStatusParts(details)}`),
-					0,
-					0,
-				);
+				return new Text(renderStatus("running", "muted", details, true), 0, 0);
 			}
 			if (details?.success === true) {
-				return new Text(
-					theme.fg("success", `done • ${formatStatusParts(details)}`),
-					0,
-					0,
+				const line = renderStatus("done", "success", details, true);
+				if (!options.expanded) return new Text(line, 0, 0);
+
+				const content = result.content[0];
+				const output = content?.type === "text" ? content.text : "";
+				const detailedUsage = formatDetailedUsage(details.childUsage);
+				const container = new Container();
+				container.addChild(new Text(line, 0, 0));
+				if (detailedUsage) {
+					container.addChild(
+						new Text(theme.fg("dim", `usage • ${detailedUsage}`), 0, 0),
+					);
+				}
+				if (details.fallbackReason) {
+					container.addChild(
+						new Text(
+							theme.fg("warning", `fallback • ${details.fallbackReason}`),
+							0,
+							0,
+						),
+					);
+				}
+				if (details.outputTruncated) {
+					const saved = details.fullOutputFile
+						? ` • full output: ${details.fullOutputFile}`
+						: "";
+					container.addChild(
+						new Text(theme.fg("warning", `output truncated${saved}`), 0, 0),
+					);
+				}
+				container.addChild(new Spacer(1));
+				container.addChild(
+					new Text(theme.fg("muted", "─── child report ───"), 0, 0),
 				);
+				if (output.trim()) {
+					container.addChild(
+						new Markdown(output.trim(), 0, 0, getMarkdownTheme()),
+					);
+				} else {
+					container.addChild(new Text(theme.fg("muted", "(no output)"), 0, 0));
+				}
+				return container;
 			}
 
 			const content = result.content[0];
 			const text = content?.type === "text" ? content.text : "";
 			if (context.isError) {
-				return new Text(theme.fg("warning", `failed • ${text}`), 0, 0);
+				return new Text(theme.fg("error", `failed • ${text}`), 0, 0);
 			}
 			return new Text(text, 0, 0);
 		},
