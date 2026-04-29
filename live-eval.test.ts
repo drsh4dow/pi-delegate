@@ -44,6 +44,7 @@ type FixtureTask = {
 	id: string;
 	expectDelegate: DelegateExpectation;
 	expectedDelegateEffort?: DelegateEffort | DelegateEffort[];
+	forbiddenDelegateTaskPatterns?: string[];
 	readOnly: boolean;
 	prompt: string;
 	expectedOutcome: string;
@@ -59,6 +60,7 @@ type RunSummary = {
 	delegateSucceeded: number;
 	delegateFailed: number;
 	delegateEfforts: DelegateEffort[];
+	delegateTasks: string[];
 	parentUsage: UsageSummary;
 	childUsage: UsageSummary;
 	finalText: string;
@@ -230,6 +232,7 @@ const scoreEffort = (
 	actual: DelegateEffort[],
 ): number => {
 	if (!expected) return 1;
+	if (actual.length === 0) return 1;
 	const accepted = Array.isArray(expected) ? expected : [expected];
 	return actual.some((effort) => accepted.includes(effort)) ? 1 : 0;
 };
@@ -237,7 +240,7 @@ const scoreEffort = (
 const liveTasks: FixtureTask[] = [
 	{
 		id: "broad-repo-scan",
-		expectDelegate: "required",
+		expectDelegate: "allowed",
 		expectedDelegateEffort: "fast",
 		readOnly: true,
 		prompt:
@@ -256,7 +259,7 @@ const liveTasks: FixtureTask[] = [
 	},
 	{
 		id: "noisy-investigation",
-		expectDelegate: "required",
+		expectDelegate: "allowed",
 		expectedDelegateEffort: "smart",
 		readOnly: true,
 		prompt:
@@ -278,7 +281,7 @@ const liveTasks: FixtureTask[] = [
 	},
 	{
 		id: "library-api-research",
-		expectDelegate: "required",
+		expectDelegate: "allowed",
 		expectedDelegateEffort: ["fast", "smart"],
 		readOnly: true,
 		prompt:
@@ -316,7 +319,7 @@ const liveTasks: FixtureTask[] = [
 	},
 	{
 		id: "plan-critique",
-		expectDelegate: "required",
+		expectDelegate: "allowed",
 		expectedDelegateEffort: "smart",
 		readOnly: true,
 		prompt:
@@ -334,8 +337,7 @@ const liveTasks: FixtureTask[] = [
 	},
 	{
 		id: "narrow-implementation",
-		expectDelegate: "required",
-		expectedDelegateEffort: "balanced",
+		expectDelegate: "allowed",
 		readOnly: false,
 		prompt:
 			"Fix the failing discount behavior in this tiny package. Keep the change focused and run the relevant test.",
@@ -349,6 +351,27 @@ const liveTasks: FixtureTask[] = [
 				"export function applyDiscount(cents: number, rate: number) {\n\treturn Math.round(cents * rate);\n}\n",
 			"discount.test.ts":
 				"import { expect, test } from 'bun:test';\nimport { applyDiscount } from './discount';\n\ntest('applies discount rate', () => {\n\texpect(applyDiscount(1000, 0.25)).toBe(750);\n});\n",
+		},
+	},
+	{
+		id: "t3-env-style-implementation",
+		expectDelegate: "allowed",
+		forbiddenDelegateTaskPatterns: [
+			"\\b(implement|fix|change|edit|write|update)\\b[\\s\\S]*(t3-env|environment validation|env\\.ts|DATABASE_URL|PORT)",
+		],
+		readOnly: false,
+		prompt:
+			"Implement the missing t3-env-style environment validation behavior. Keep the change focused and run the tests.",
+		expectedOutcome:
+			"env.ts exports env with validated DATABASE_URL and PORT, applies the default PORT, and throws for missing DATABASE_URL.",
+		postCheck: ["bun test"],
+		files: {
+			"package.json":
+				'{\n\t"type": "module",\n\t"scripts": { "test": "bun test" }\n}\n',
+			"env.ts":
+				"export const env = {\n\tDATABASE_URL: process.env.DATABASE_URL,\n\tPORT: Number(process.env.PORT),\n};\n",
+			"env.test.ts":
+				"import { expect, test } from 'bun:test';\n\nasync function loadEnv(vars: Record<string, string | undefined>) {\n\tconst old = { ...process.env };\n\tfor (const key of ['DATABASE_URL', 'PORT']) delete process.env[key];\n\tfor (const [key, value] of Object.entries(vars)) {\n\t\tif (value !== undefined) process.env[key] = value;\n\t}\n\ttry {\n\t\treturn await import('./env.ts?case=' + Math.random());\n\t} finally {\n\t\tprocess.env = old;\n\t}\n}\n\ntest('validates and defaults server env', async () => {\n\tconst mod = await loadEnv({ DATABASE_URL: 'postgres://db', PORT: undefined });\n\texpect(mod.env).toEqual({ DATABASE_URL: 'postgres://db', PORT: 3000 });\n});\n\ntest('rejects missing required env', async () => {\n\tawait expect(loadEnv({ DATABASE_URL: undefined })).rejects.toThrow('DATABASE_URL');\n});\n",
 		},
 	},
 	{
@@ -579,6 +602,7 @@ function parseRun(
 	let delegateSucceeded = 0;
 	let delegateFailed = 0;
 	const delegateEfforts: DelegateEffort[] = [];
+	const delegateTasks: string[] = [];
 	let jsonParseErrors = 0;
 
 	for (const line of run.stdout.split(/\r?\n/)) {
@@ -594,13 +618,16 @@ function parseRun(
 		const e = event as {
 			type?: string;
 			toolName?: string;
-			args?: { effort?: unknown };
+			args?: { effort?: unknown; task?: unknown };
 			isError?: boolean;
 			message?: { role?: string; usage?: unknown };
 			result?: { details?: { childUsage?: UsageSummary } };
 		};
 		if (e.type === "tool_execution_start" && e.toolName === "delegate") {
 			delegateCalls++;
+			if (typeof e.args?.task === "string") {
+				delegateTasks.push(e.args.task);
+			}
 			if (
 				e.args?.effort === "fast" ||
 				e.args?.effort === "balanced" ||
@@ -631,6 +658,7 @@ function parseRun(
 		delegateSucceeded,
 		delegateFailed,
 		delegateEfforts,
+		delegateTasks,
 		parentUsage,
 		childUsage,
 		finalText,
@@ -803,6 +831,14 @@ function hardFailuresFor(
 			`${task.id}: expected delegate effort ${expected}, saw ${attempt.enabled.delegateEfforts.join(", ")}`,
 		);
 	}
+	for (const pattern of task.forbiddenDelegateTaskPatterns ?? []) {
+		const regex = new RegExp(pattern, "i");
+		if (attempt.enabled.delegateTasks.some((task) => regex.test(task))) {
+			failures.push(
+				`${task.id}: delegate task matched forbidden pattern ${pattern}`,
+			);
+		}
+	}
 	return failures;
 }
 
@@ -846,6 +882,7 @@ async function runCaseAttempt(
 				delegateSucceeded: 0,
 				delegateFailed: 0,
 				delegateEfforts: [],
+				delegateTasks: [],
 				parentUsage: emptyUsage(),
 				childUsage: emptyUsage(),
 				finalText: "",
@@ -937,11 +974,14 @@ describe("live eval scoring", () => {
 		expect(scoreEffort(["fast", "smart"], ["smart"])).toBe(1);
 		expect(scoreEffort("balanced", ["fast"])).toBe(0);
 		expect(scoreEffort(["fast", "smart"], ["balanced"])).toBe(0);
-		expect(scoreEffort("smart", [])).toBe(0);
+		expect(scoreEffort("smart", [])).toBe(1);
 	});
 
-	test("hard-fails required delegate and expected effort misses", () => {
-		const run = (delegateEfforts: DelegateEffort[] = []): RunSummary => ({
+	test("hard-fails required delegate, expected effort, and forbidden task misses", () => {
+		const run = (
+			delegateEfforts: DelegateEffort[] = [],
+			delegateTasks: string[] = [],
+		): RunSummary => ({
 			mode: "enabled",
 			exitCode: 0,
 			durationMs: 1,
@@ -949,6 +989,7 @@ describe("live eval scoring", () => {
 			delegateSucceeded: delegateEfforts.length,
 			delegateFailed: 0,
 			delegateEfforts,
+			delegateTasks,
 			parentUsage: emptyUsage(),
 			childUsage: emptyUsage(),
 			finalText: "",
@@ -989,6 +1030,29 @@ describe("live eval scoring", () => {
 				disabledQuality: null,
 			}),
 		).toEqual(["required-fast: expected delegate effort fast, saw balanced"]);
+
+		expect(
+			hardFailuresFor(
+				{
+					...task,
+					id: "no-whole-task",
+					expectDelegate: "allowed",
+					expectedDelegateEffort: undefined,
+					forbiddenDelegateTaskPatterns: ["implement[\\s\\S]*env"],
+				},
+				{
+					attempt: 1,
+					enabled: run(["balanced"], ["Implement the env feature"]),
+					disabled: run(),
+					decisionScore: 1,
+					effortScore: 1,
+					enabledQuality: null,
+					disabledQuality: null,
+				},
+			),
+		).toEqual([
+			"no-whole-task: delegate task matched forbidden pattern implement[\\s\\S]*env",
+		]);
 	});
 
 	test("selects a requested task subset", () => {
@@ -1021,7 +1085,7 @@ describe("live eval scoring", () => {
 			JSON.stringify({
 				type: "tool_execution_start",
 				toolName: "delegate",
-				args: { effort: "smart" },
+				args: { effort: "smart", task: "Review the parser" },
 			}),
 			JSON.stringify({
 				type: "tool_execution_end",
@@ -1068,6 +1132,7 @@ describe("live eval scoring", () => {
 		expect(summary.delegateCalls).toBe(1);
 		expect(summary.delegateSucceeded).toBe(1);
 		expect(summary.delegateEfforts).toEqual(["smart"]);
+		expect(summary.delegateTasks).toEqual(["Review the parser"]);
 		expect(summary.finalText).toBe("done");
 		expect(summary.parentUsage.totalTokens).toBe(13);
 		expect(summary.childUsage.totalTokens).toBe(7);

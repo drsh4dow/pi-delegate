@@ -91,32 +91,50 @@ describe("delegate extension", () => {
 		expect(tool.label).toBe("Delegate");
 		expect(tool.executionMode).toBe("sequential");
 		expect(tool.description).toContain("isolated");
-		expect(tool.description).toContain("required policy");
+		expect(tool.description).toContain("parent receives only");
 		expect(tool.description).toContain("final report");
-		expect(tool.description).toContain("may modify files");
-		expect(tool.promptSnippet).toContain("Required once early");
-		expect(tool.promptSnippet).toContain("isolated child Pi final report");
-		expect(promptGuidelines).toHaveLength(4);
+		expect(tool.description).toContain("parent");
+		expect(tool.description).toContain(
+			"write-capable delegation is exceptional",
+		);
+		expect(tool.description).toContain("Must use delegate");
+		expect(tool.description).not.toContain("required policy");
+		expect(tool.description).not.toContain("delegate the actual");
+		expect(tool.promptSnippet).toContain(
+			"Must use for explicitly requested independent/fresh review",
+		);
+		expect(tool.promptSnippet).toContain("Parent owns implementation");
+		expect(promptGuidelines).toHaveLength(5);
 		const joinedGuidelines = promptGuidelines.join("\n");
 		for (const guideline of promptGuidelines) {
 			expect(guideline).toContain("delegate");
 		}
+		expect(joinedGuidelines).not.toContain("required policy");
+		expect(joinedGuidelines).not.toContain("delegate the actual");
 		expect(joinedGuidelines).toContain("broad repo scanning");
 		expect(joinedGuidelines).toContain("current library/API research");
-		expect(joinedGuidelines).toContain("non-trivial implementation");
+		expect(joinedGuidelines).toContain("Must use delegate");
+		expect(joinedGuidelines).toContain("independent/fresh review");
+		expect(joinedGuidelines).toContain(
+			"ordinary non-trivial implementation does not require delegation",
+		);
 		expect(joinedGuidelines).toContain("noisy/root-cause investigation");
-		expect(joinedGuidelines).toContain("call delegate once early");
+		expect(joinedGuidelines).toContain(
+			"if you use it, call it early before broad exploration",
+		);
 		expect(joinedGuidelines).toContain("trivial fact lookups");
 		expect(joinedGuidelines).toContain("obvious typo/format/text-only edits");
-		expect(joinedGuidelines).toContain("self-contained delegate task");
+		expect(joinedGuidelines).toContain("Parent owns implementation");
 		expect(joinedGuidelines).toContain("constraints");
 		expect(joinedGuidelines).toContain("verification");
 		expect(joinedGuidelines).toContain("choose effort explicitly");
-		expect(joinedGuidelines).toContain("fast only for read-only scouting");
+		expect(joinedGuidelines).toContain("fast for read-only scouting");
 		expect(joinedGuidelines).toContain("docs/API lookup");
-		expect(joinedGuidelines).toContain("smart for any review or critique");
+		expect(joinedGuidelines).toContain("smart for review or critique");
 		expect(joinedGuidelines).toContain("ambiguous or high-risk design");
-		expect(joinedGuidelines).toContain("fixing failing tests/behavior");
+		expect(joinedGuidelines).toContain(
+			"exceptional explicit child implementation",
+		);
 		expect(parameters.properties.task?.description).toContain(
 			"Self-contained task",
 		);
@@ -135,7 +153,7 @@ describe("delegate extension", () => {
 		);
 		expect(parameters.properties.effort?.description).toContain("debugging");
 		expect(parameters.properties.effort?.description).toContain(
-			"fixing failing tests/behavior",
+			"exceptional, explicitly write-capable child implementation",
 		);
 		expect(parameters.properties.effort?.default).toBe("balanced");
 		expect(parameters.required).toEqual(["task"]);

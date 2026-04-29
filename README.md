@@ -48,7 +48,7 @@ Effort maps to one model with different thinking levels:
 | `balanced` | `openai-codex/gpt-5.5` | `medium` |
 | `smart` | `openai-codex/gpt-5.5` | `high` |
 
-Choose `fast` for scouting, repo mapping, docs/API lookup, and quick read-only recon. Choose `smart` for review, critique, debugging, ambiguous design, and high-risk reasoning. Use `balanced` for ordinary focused implementation or moderate investigation.
+Choose `fast` for scouting, repo mapping, docs/API lookup, and quick read-only recon. Choose `smart` for review, critique, debugging, ambiguous design, and high-risk reasoning. Use `balanced` for moderate investigation or exceptional, explicitly write-capable child implementation.
 
 If `openai-codex/gpt-5.5` is missing or unauthenticated, `delegate` falls back to the parent model and reports the fallback in metadata.
 
@@ -68,7 +68,7 @@ If `openai-codex/gpt-5.5` is missing or unauthenticated, `delegate` falls back t
 - child final reports are prompted as handoff-ready summaries with task, result, evidence, files, verification, and only-important handoff notes
 - failures throw native Pi tool errors with a concise reason plus model/duration/tool-count metadata
 - final child output is truncated at Pi's standard 2000-line/50KB tool-output limits, with the full report saved to a temp file when truncation occurs
-- normal Pi tools are available to the child, including write-capable tools; this is intentional and enforced by prompt/user intent rather than by a read-only tool sandbox
+- normal Pi tools are available to the child, including write-capable tools; parent agents should keep implementation/final validation in the parent by default and delegate write-capable child tasks only when explicit or exceptional
 
 ## Package shape
 
@@ -80,10 +80,10 @@ Use `delegate` for work that benefits from isolation:
 
 - scan a code area without filling the main context
 - research a library/API and report the answer
-- ask a child agent to review a plan
-- implement a narrow change while the main agent keeps orchestration context clean
+- get an explicitly requested independent/fresh review
+- investigate noisy failures and report evidence
 
-Do not use it as a workflow engine. If you need chains, background jobs, worktrees, or agent management, use a purpose-built workflow package.
+Do not use it as a workflow engine or a default implementation worker. The parent agent owns implementation, final validation, and the final answer unless the user explicitly asks for child implementation or the task has a clear exceptional isolation benefit. Explicit independent/fresh review requests should use delegation because isolation is the product. If you need chains, background jobs, worktrees, or agent management, use a purpose-built workflow package.
 
 ## Development
 
@@ -112,4 +112,4 @@ bun run test:live
 
 `PI_DELEGATE_EVAL_MODEL` and `PI_DELEGATE_EVAL_JUDGE_MODEL` default to `openai/gpt-5.5:low`. Use `PI_DELEGATE_EVAL_TASKS=id1,id2` to run a subset while tuning the policy.
 
-The suite records sanitized JSONL traces plus `summary.json`, including delegate decision and effort-selection KPIs. It hard-fails crashes, budget overruns, read-only writes, required/forbidden delegate decision misses, and effort mismatches when delegate is called with an expected effort; judge quality scores remain calibration data.
+The suite records sanitized JSONL traces plus `summary.json`, including delegate decision and effort-selection KPIs. It hard-fails crashes, budget overruns, read-only writes, required/forbidden delegate decision misses, and effort mismatches when delegate is called with an expected effort; implementation fixtures are generally allowed-not-required delegation. Judge quality scores remain calibration data.
