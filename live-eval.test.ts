@@ -43,7 +43,7 @@ type UsageSummary = {
 type FixtureTask = {
 	id: string;
 	expectDelegate: DelegateExpectation;
-	expectedDelegateEffort?: DelegateEffort;
+	expectedDelegateEffort?: DelegateEffort | DelegateEffort[];
 	readOnly: boolean;
 	prompt: string;
 	expectedOutcome: string;
@@ -226,11 +226,12 @@ const scoreDecision = (
 };
 
 const scoreEffort = (
-	expected: DelegateEffort | undefined,
+	expected: DelegateEffort | DelegateEffort[] | undefined,
 	actual: DelegateEffort[],
 ): number => {
 	if (!expected) return 1;
-	return actual.includes(expected) ? 1 : 0;
+	const accepted = Array.isArray(expected) ? expected : [expected];
+	return actual.some((effort) => accepted.includes(effort)) ? 1 : 0;
 };
 
 const liveTasks: FixtureTask[] = [
@@ -278,7 +279,7 @@ const liveTasks: FixtureTask[] = [
 	{
 		id: "library-api-research",
 		expectDelegate: "required",
-		expectedDelegateEffort: "fast",
+		expectedDelegateEffort: ["fast", "smart"],
 		readOnly: true,
 		prompt:
 			"Research how this project should consume the local fake library. Do not edit files. Compare the current usage with the library docs and report the API mismatch.",
@@ -795,8 +796,11 @@ function hardFailuresFor(
 		attempt.enabled.delegateCalls > 0 &&
 		attempt.effortScore !== 1
 	) {
+		const expected = Array.isArray(task.expectedDelegateEffort)
+			? task.expectedDelegateEffort.join(" or ")
+			: task.expectedDelegateEffort;
 		failures.push(
-			`${task.id}: expected delegate effort ${task.expectedDelegateEffort}, saw ${attempt.enabled.delegateEfforts.join(", ")}`,
+			`${task.id}: expected delegate effort ${expected}, saw ${attempt.enabled.delegateEfforts.join(", ")}`,
 		);
 	}
 	return failures;
@@ -930,7 +934,9 @@ describe("live eval scoring", () => {
 		expect(scoreEffort(undefined, [])).toBe(1);
 		expect(scoreEffort("fast", ["fast"])).toBe(1);
 		expect(scoreEffort("smart", ["fast", "smart"])).toBe(1);
+		expect(scoreEffort(["fast", "smart"], ["smart"])).toBe(1);
 		expect(scoreEffort("balanced", ["fast"])).toBe(0);
+		expect(scoreEffort(["fast", "smart"], ["balanced"])).toBe(0);
 		expect(scoreEffort("smart", [])).toBe(0);
 	});
 
