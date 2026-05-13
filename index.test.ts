@@ -206,7 +206,7 @@ describe("delegate extension", () => {
 			provider: "openai-codex",
 			id: "gpt-5.5",
 		});
-		expect(thinkingForEffort("fast")).toBe("minimal");
+		expect(thinkingForEffort("fast")).toBe("low");
 		expect(thinkingForEffort("balanced")).toBe("medium");
 		expect(thinkingForEffort("smart")).toBe("high");
 	});
@@ -459,7 +459,7 @@ describe("delegate extension", () => {
 			effort: "fast",
 			requestedModel: "openai-codex/gpt-5.5",
 			model: "openai-codex/gpt-5.5",
-			thinking: "minimal",
+			thinking: "low",
 			durationMs: 1234,
 			toolCalls: 1,
 			failedToolCalls: 0,

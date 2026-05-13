@@ -80,7 +80,7 @@ const DelegateParams = Type.Object({
 
 type DelegateParams = Static<typeof DelegateParams>;
 export type DelegateEffort = "fast" | "balanced" | "smart";
-export type DelegateThinking = "minimal" | "medium" | "high";
+export type DelegateThinking = "low" | "medium" | "high";
 
 export interface DelegateUsageStats {
 	turns: number;
@@ -150,7 +150,7 @@ export async function formatDelegateOutput(
 }
 
 export function thinkingForEffort(effort: DelegateEffort): DelegateThinking {
-	if (effort === "fast") return "minimal";
+	if (effort === "fast") return "low";
 	if (effort === "smart") return "high";
 	return "medium";
 }
