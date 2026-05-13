@@ -1,7 +1,6 @@
 # pi-delegate
 
 [![npm version](https://img.shields.io/npm/v/pi-delegate.svg)](https://www.npmjs.com/package/pi-delegate)
-[![CI](https://github.com/drsh4dow/pi-delegate/actions/workflows/ci.yml/badge.svg)](https://github.com/drsh4dow/pi-delegate/actions/workflows/ci.yml)
 
 One Pi tool: `delegate`.
 
